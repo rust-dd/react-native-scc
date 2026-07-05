@@ -1,0 +1,129 @@
+{
+  "name": "react-native-scc-storage",
+  "version": "0.1.1",
+  "description": "Ultra-low-latency persistent key-value storage for React Native, built on scc (Rust) and Nitro Modules",
+  "main": "lib/index",
+  "module": "lib/index",
+  "types": "lib/index.d.ts",
+  "react-native": "src/index",
+  "source": "src/index",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "react-native": "./src/index.ts",
+      "default": "./lib/index.js"
+    },
+    "./zustand": {
+      "types": "./lib/adapters/zustand.d.ts",
+      "react-native": "./src/adapters/zustand.ts",
+      "default": "./lib/adapters/zustand.js"
+    },
+    "./jotai": {
+      "types": "./lib/adapters/jotai.d.ts",
+      "react-native": "./src/adapters/jotai.ts",
+      "default": "./lib/adapters/jotai.js"
+    },
+    "./redux": {
+      "types": "./lib/adapters/redux.d.ts",
+      "react-native": "./src/adapters/redux.ts",
+      "default": "./lib/adapters/redux.js"
+    },
+    "./app.plugin.js": "./app.plugin.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "react-native.config.js",
+    "lib",
+    "nitrogen",
+    "android/build.gradle",
+    "android/gradle.properties",
+    "android/fix-prefab.gradle",
+    "android/CMakeLists.txt",
+    "android/src",
+    "cpp",
+    "ios/**/*.h",
+    "ios/**/*.m",
+    "ios/**/*.mm",
+    "ios/**/*.cpp",
+    "ios/**/*.swift",
+    "ios/Libs/scc_kv_ffi.xcframework",
+    "android/src/main/jniLibs",
+    "crates/kv-core/Cargo.toml",
+    "crates/kv-core/src",
+    "crates/kv-core/benches",
+    "crates/kv-ffi/Cargo.toml",
+    "crates/kv-ffi/cbindgen.toml",
+    "crates/kv-ffi/src",
+    "Cargo.toml",
+    "Cargo.lock",
+    "scripts",
+    "app.plugin.js",
+    "nitro.json",
+    "*.podspec",
+    "README.md",
+    "assets"
+  ],
+  "scripts": {
+    "test": "jest",
+    "typecheck": "tsc --noEmit",
+    "typescript": "tsc",
+    "specs": "tsc --noEmit false && nitrogen --logLevel=\"debug\"",
+    "rust:build:ios": "bash scripts/build-ios.sh",
+    "rust:build:android": "bash scripts/build-android.sh",
+    "rust:build": "npm run rust:build:ios && npm run rust:build:android",
+    "prepack": "node scripts/prepack.js",
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "keywords": [
+    "react-native",
+    "nitro",
+    "kv",
+    "storage",
+    "mmkv",
+    "scc",
+    "rust"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rust-dd/react-native-scc.git"
+  },
+  "author": "danixx",
+  "license": "MIT",
+  "devDependencies": {
+    "@babel/core": "^7.26.0",
+    "@babel/preset-env": "^7.26.0",
+    "@babel/preset-typescript": "^7.26.0",
+    "@expo/config-plugins": "^55.0.8-canary-20260328-bdc6273",
+    "@types/jest": "^29.5.0",
+    "@types/react": "^19.1.3",
+    "babel-jest": "^29.7.0",
+    "jest": "^29.7.0",
+    "jotai": "^2.10.0",
+    "nitrogen": "*",
+    "react": "19.2.3",
+    "react-native": "0.83.0",
+    "react-native-nitro-modules": "*",
+    "typescript": "^5.8.3",
+    "zustand": "^5.0.0"
+  },
+  "peerDependencies": {
+    "jotai": ">=2",
+    "react": "*",
+    "react-native": "*",
+    "react-native-nitro-modules": "*",
+    "zustand": ">=4"
+  },
+  "peerDependenciesMeta": {
+    "jotai": {
+      "optional": true
+    },
+    "zustand": {
+      "optional": true
+    }
+  },
+  "homepage": "https://github.com/rust-dd/react-native-scc#readme",
+  "bugs": {
+    "url": "https://github.com/rust-dd/react-native-scc/issues"
+  }
+}

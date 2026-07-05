@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="596" viewBox="0 0 760 596" role="img" aria-label="Benchmark: react-native-scc vs react-native-mmkv per-operation latency in nanoseconds, lower is better; scc is faster in all eight cases">
+<rect x="0.5" y="0.5" width="759" height="595" rx="10" fill="#1a1a19" stroke="rgba(255,255,255,0.10)"/>
+<text x="24" y="34" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="14" font-weight="600" fill="#ffffff">react-native-scc vs react-native-mmkv</text>
+<text x="24" y="54" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#898781">per-op latency in nanoseconds, median of 3 runs — lower is better · iOS simulator, Release</text>
+<rect x="560" y="24" width="10" height="10" rx="2" fill="#3987e5"/>
+<text x="576" y="33" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#c3c2b7">scc</text>
+<rect x="618" y="24" width="10" height="10" rx="2" fill="#199e70"/>
+<text x="634" y="33" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#c3c2b7">mmkv</text>
+<text x="24" y="85" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="13" font-weight="600" fill="#ffffff">get_number</text>
+<text x="736" y="85" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" font-weight="600" fill="#0ca30c">1.3× faster</text>
+<text x="62" y="104" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11" fill="#898781">scc</text>
+<path d="M70,94 H164.8 Q168.8,94 168.8,98 V102 Q168.8,106 164.8,106 H70 Z" fill="#3987e5"/>
+<text x="736" y="104" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#c3c2b7">90 ns</text>
+<text x="62" y="120" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11" fill="#898781">mmkv</text>
+<path d="M70,110 H194.4 Q198.4,110 198.4,114 V118 Q198.4,122 194.4,122 H70 Z" fill="#199e70"/>
+<text x="736" y="120" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#c3c2b7">117 ns</text>
+<text x="24" y="149" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="13" font-weight="600" fill="#ffffff">get_miss</text>
+<text x="736" y="149" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" font-weight="600" fill="#0ca30c">1.3× faster</text>
+<text x="62" y="168" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11" fill="#898781">scc</text>
+<path d="M70,158 H164.8 Q168.8,158 168.8,162 V166 Q168.8,170 164.8,170 H70 Z" fill="#3987e5"/>
+<text x="736" y="168" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#c3c2b7">90 ns</text>
+<text x="62" y="184" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11" fill="#898781">mmkv</text>
+<path d="M70,174 H196.6 Q200.6,174 200.6,178 V182 Q200.6,186 196.6,186 H70 Z" fill="#199e70"/>
+<text x="736" y="184" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#c3c2b7">119 ns</text>
+<text x="24" y="213" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="13" font-weight="600" fill="#ffffff">get_string16</text>
+<text x="736" y="213" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" font-weight="600" fill="#0ca30c">1.2× faster</text>
+<text x="62" y="232" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11" fill="#898781">scc</text>
+<path d="M70,222 H194.4 Q198.4,222 198.4,226 V230 Q198.4,234 194.4,234 H70 Z" fill="#3987e5"/>
+<text x="736" y="232" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#c3c2b7">117 ns</text>
+<text x="62" y="248" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11" fill="#898781">mmkv</text>
+<path d="M70,238 H220.7 Q224.7,238 224.7,242 V246 Q224.7,250 220.7,250 H70 Z" fill="#199e70"/>
+<text x="736" y="248" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#c3c2b7">141 ns</text>
+<text x="24" y="277" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="13" font-weight="600" fill="#ffffff">get_string64</text>
+<text x="736" y="277" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" font-weight="600" fill="#0ca30c">6% faster</text>
+<text x="62" y="296" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11" fill="#898781">scc</text>
+<path d="M70,286 H224.0 Q228.0,286 228.0,290 V294 Q228.0,298 224.0,298 H70 Z" fill="#3987e5"/>
+<text x="736" y="296" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#c3c2b7">144 ns</text>
+<text x="62" y="312" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11" fill="#898781">mmkv</text>
+<path d="M70,302 H232.8 Q236.8,302 236.8,306 V310 Q236.8,314 232.8,314 H70 Z" fill="#199e70"/>
+<text x="736" y="312" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#c3c2b7">152 ns</text>
+<text x="24" y="341" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="13" font-weight="600" fill="#ffffff">set_number</text>
+<text x="736" y="341" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" font-weight="600" fill="#0ca30c">1.4× faster</text>
+<text x="62" y="360" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11" fill="#898781">scc</text>
+<path d="M70,350 H281.1 Q285.1,350 285.1,354 V358 Q285.1,362 281.1,362 H70 Z" fill="#3987e5"/>
+<text x="736" y="360" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#c3c2b7">196 ns</text>
+<text x="62" y="376" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11" fill="#898781">mmkv</text>
+<path d="M70,366 H361.2 Q365.2,366 365.2,370 V374 Q365.2,378 361.2,378 H70 Z" fill="#199e70"/>
+<text x="736" y="376" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#c3c2b7">269 ns</text>
+<text x="24" y="405" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="13" font-weight="600" fill="#ffffff">set_string16</text>
+<text x="736" y="405" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" font-weight="600" fill="#0ca30c">1.5× faster</text>
+<text x="62" y="424" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11" fill="#898781">scc</text>
+<path d="M70,414 H294.3 Q298.3,414 298.3,418 V422 Q298.3,426 294.3,426 H70 Z" fill="#3987e5"/>
+<text x="736" y="424" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#c3c2b7">208 ns</text>
+<text x="62" y="440" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11" fill="#898781">mmkv</text>
+<path d="M70,430 H401.8 Q405.8,430 405.8,434 V438 Q405.8,442 401.8,442 H70 Z" fill="#199e70"/>
+<text x="736" y="440" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#c3c2b7">306 ns</text>
+<text x="24" y="469" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="13" font-weight="600" fill="#ffffff">set_string64</text>
+<text x="736" y="469" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" font-weight="600" fill="#0ca30c">1.5× faster</text>
+<text x="62" y="488" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11" fill="#898781">scc</text>
+<path d="M70,478 H479.7 Q483.7,478 483.7,482 V486 Q483.7,490 479.7,490 H70 Z" fill="#3987e5"/>
+<text x="736" y="488" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#c3c2b7">377 ns</text>
+<text x="62" y="504" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11" fill="#898781">mmkv</text>
+<path d="M70,494 H674.0 Q678.0,494 678.0,498 V502 Q678.0,506 674.0,506 H70 Z" fill="#199e70"/>
+<text x="736" y="504" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#c3c2b7">554 ns</text>
+<text x="24" y="533" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="13" font-weight="600" fill="#ffffff">setMany 100×16 (per key)</text>
+<text x="736" y="533" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" font-weight="600" fill="#0ca30c">1.5× faster</text>
+<text x="62" y="552" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11" fill="#898781">scc</text>
+<path d="M70,542 H291.0 Q295.0,542 295.0,546 V550 Q295.0,554 291.0,554 H70 Z" fill="#3987e5"/>
+<text x="736" y="552" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#c3c2b7">205 ns</text>
+<text x="62" y="568" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11" fill="#898781">mmkv</text>
+<path d="M70,558 H411.7 Q415.7,558 415.7,562 V566 Q415.7,570 411.7,570 H70 Z" fill="#199e70"/>
+<text x="736" y="568" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#c3c2b7">315 ns</text>
+</svg>

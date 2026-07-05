@@ -1,0 +1,15 @@
+[package]
+name = "kv-ffi"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "scc_kv_ffi"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+kv-core = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -1,0 +1,28 @@
+{
+  "name": "example",
+  "version": "1.0.0",
+  "main": "index.ts",
+  "dependencies": {
+    "expo": "~57.0.2",
+    "expo-status-bar": "~57.0.0",
+    "jotai": "^2.20.1",
+    "react": "19.2.3",
+    "react-native": "0.86.0",
+    "react-native-mmkv": "^4.3.2",
+    "react-native-nitro-modules": "^0.36.1",
+    "react-native-safe-area-context": "~5.7.0",
+    "zustand": "^5.0.14",
+    "react-native-scc-storage": "file:.."
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.2",
+    "typescript": "~6.0.3"
+  },
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "expo start --web"
+  },
+  "private": true
+}

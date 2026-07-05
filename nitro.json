@@ -1,0 +1,30 @@
+{
+  "$schema": "https://nitro.margelo.com/nitro.schema.json",
+  "cxxNamespace": ["scckv"],
+  "ios": {
+    "iosModuleName": "NitroSccKv"
+  },
+  "android": {
+    "androidNamespace": ["scckv"],
+    "androidCxxLibName": "NitroSccKv"
+  },
+  "autolinking": {
+    "SccKv": {
+      "all": {
+        "language": "c++",
+        "implementationClassName": "HybridSccKv"
+      }
+    },
+    "SccKvPlatformContext": {
+      "ios": {
+        "language": "swift",
+        "implementationClassName": "HybridSccKvPlatformContext"
+      },
+      "android": {
+        "language": "kotlin",
+        "implementationClassName": "HybridSccKvPlatformContext"
+      }
+    }
+  },
+  "ignorePaths": ["**/node_modules"]
+}

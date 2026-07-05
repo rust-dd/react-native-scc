@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "scc-example",
+    "slug": "scc-example",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "scheme": "sccexample",
+    "plugins": [
+      "react-native-scc-storage"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.rustdd.scckv.example"
+    },
+    "android": {
+      "package": "com.rustdd.scckv.example",
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}
