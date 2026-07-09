@@ -31,6 +31,7 @@ export interface SccKvInstance
 
   setManyString(keys: string[], values: string[]): void
   getManyString(keys: string[]): (string | null)[]
+  applyBatch(packed: ArrayBuffer): void
 
   setStringAsync(key: string, value: string): Promise<void>
   setNumberAsync(key: string, value: number): Promise<void>

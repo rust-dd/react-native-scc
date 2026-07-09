@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use crate::error::{Error, Result};
 use crate::store::{OpenOptions, Store};
@@ -83,13 +84,21 @@ fn check_options(
 }
 
 /// Returns the named in-memory store, creating it on first use.
-pub fn in_memory(id: &str) -> Arc<Store> {
+pub fn in_memory(
+    id: &str,
+    max_entries: Option<usize>,
+    sweep_interval: Option<Duration>,
+) -> Arc<Store> {
     let _guard = registry_lock().lock().unwrap();
     let key = format!("mem::{id}");
     if let Some(existing) = registry().read_sync(&key, |_, entry| entry.store.clone()) {
         return existing;
     }
-    let store = Store::in_memory();
+    let store = if max_entries.is_some() || sweep_interval.is_some() {
+        Store::in_memory_evicting(max_entries, sweep_interval.unwrap_or(Duration::from_secs(30)))
+    } else {
+        Store::in_memory()
+    };
     match registry().entry_sync(key) {
         scc::hash_map::Entry::Occupied(o) => o.get().store.clone(),
         scc::hash_map::Entry::Vacant(v) => {
@@ -160,8 +169,8 @@ mod tests {
 
     #[test]
     fn in_memory_registry_dedupes() {
-        let a = in_memory("state");
-        let b = in_memory("state");
+        let a = in_memory("state", None, None);
+        let b = in_memory("state", None, None);
         assert!(Arc::ptr_eq(&a, &b));
         close(None, "state").unwrap();
     }

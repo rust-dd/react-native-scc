@@ -13,6 +13,10 @@ export interface KVOptions {
   recreate?: boolean
   /** Enables encryption at rest (ChaCha20-Poly1305; the cipher key is derived from this passphrase). */
   encryptionKey?: string
+  /** Maximum live entries before the background sweeper evicts keys. */
+  maxEntries?: number
+  /** Background TTL/eviction sweep interval in milliseconds. */
+  ttlSweepIntervalMs?: number
 }
 
 export interface SetOptions {

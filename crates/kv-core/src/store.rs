@@ -40,11 +40,20 @@ impl Default for OpenOptions {
     }
 }
 
+/// A single operation in an atomic batch applied via [`Store::apply_batch`].
+pub enum BatchOp {
+    Set { key: String, value: Value },
+    Delete { key: String },
+}
+
 pub struct Store {
     map: Arc<crate::ValueMap>,
     listeners: Arc<Listeners>,
     closed: AtomicBool,
     wal: Option<WalHandle>,
+    /// Held only to stop the in-memory background sweeper when the store drops.
+    #[allow(dead_code)]
+    sweeper: Option<crate::sweeper::SweeperHandle>,
 }
 
 impl Store {
@@ -54,6 +63,26 @@ impl Store {
             listeners: Arc::new(Listeners::new()),
             closed: AtomicBool::new(false),
             wal: None,
+            sweeper: None,
+        })
+    }
+
+    /// In-memory store with a background sweeper thread that reclaims expired
+    /// keys and, when `max_entries` is set, evicts down to fit.
+    pub fn in_memory_evicting(
+        max_entries: Option<usize>,
+        sweep_interval: Duration,
+    ) -> Arc<Store> {
+        let map = Arc::new(crate::new_value_map());
+        let listeners = Arc::new(Listeners::new());
+        let sweeper =
+            crate::sweeper::spawn(map.clone(), listeners.clone(), max_entries, sweep_interval);
+        Arc::new(Store {
+            map,
+            listeners,
+            closed: AtomicBool::new(false),
+            wal: None,
+            sweeper: Some(sweeper),
         })
     }
 
@@ -108,6 +137,7 @@ impl Store {
             listeners,
             closed: AtomicBool::new(false),
             wal: Some(wal),
+            sweeper: None,
         }))
     }
 
@@ -211,6 +241,60 @@ impl Store {
             self.listeners.notify(Some(key));
         }
         Ok(())
+    }
+
+    /// Applies `ops` as one crash-atomic unit: a single WAL record, so replay
+    /// sees all of it or none. Listeners fire per changed key.
+    pub fn apply_batch(&self, ops: &[BatchOp]) -> Result<()> {
+        self.ensure_open()?;
+        if ops.is_empty() {
+            return Ok(());
+        }
+        let subs: Vec<record::BatchSub> = ops
+            .iter()
+            .map(|op| match op {
+                BatchOp::Set { key, value } => record::BatchSub::Set { key, value },
+                BatchOp::Delete { key } => record::BatchSub::Delete { key },
+            })
+            .collect();
+        record::validate(&Op::Batch { ops: &subs })?;
+        let collect_keys = self.listeners.is_active();
+        let mut notify_keys: Vec<compact_str::CompactString> = Vec::new();
+        if let Some(wal) = &self.wal {
+            wal.check()?;
+            let mut buf = wal.take_buffer(256);
+            record::encode(&Op::Batch { ops: &subs }, &mut buf);
+            self.apply_ops(ops, collect_keys, &mut notify_keys);
+            wal.append(buf)?;
+        } else {
+            self.apply_ops(ops, collect_keys, &mut notify_keys);
+        }
+        for key in &notify_keys {
+            self.listeners.notify(Some(key));
+        }
+        Ok(())
+    }
+
+    fn apply_ops(
+        &self,
+        ops: &[BatchOp],
+        collect: bool,
+        notify: &mut Vec<compact_str::CompactString>,
+    ) {
+        for op in ops {
+            match op {
+                BatchOp::Set { key, value } => apply_set(&self.map, key, value.clone(), 0),
+                BatchOp::Delete { key } => {
+                    self.map.remove_sync(key);
+                }
+            }
+            if collect {
+                let key = match op {
+                    BatchOp::Set { key, .. } | BatchOp::Delete { key } => key,
+                };
+                notify.push(key.as_str().into());
+            }
+        }
     }
 
     pub fn get(&self, key: &str) -> Option<Value> {
@@ -559,5 +643,62 @@ mod tests {
 
         assert!(s.set("huge", Value::Bytes(oversized)).is_err());
         assert_eq!(s.get("huge"), None);
+    }
+
+    #[test]
+    fn apply_batch_applies_all_ops() {
+        let s = Store::in_memory();
+        s.set("keep", Value::Str("x".into())).unwrap();
+        s.set("drop", Value::Str("y".into())).unwrap();
+        s.apply_batch(&[
+            BatchOp::Set {
+                key: "counter".into(),
+                value: Value::Num(2.0),
+            },
+            BatchOp::Set {
+                key: "meta".into(),
+                value: Value::Json(r#"{"n":2}"#.into()),
+            },
+            BatchOp::Delete { key: "drop".into() },
+        ])
+        .unwrap();
+        assert_eq!(s.get("counter"), Some(Value::Num(2.0)));
+        assert_eq!(s.get("meta"), Some(Value::Json(r#"{"n":2}"#.into())));
+        assert_eq!(s.get("drop"), None);
+        assert_eq!(s.get("keep"), Some(Value::Str("x".into())));
+    }
+
+    #[test]
+    fn torn_batch_record_applies_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(dir.path(), "tx", fast_opts()).unwrap();
+        s.set("base", Value::Num(1.0)).unwrap();
+        s.apply_batch(&[
+            BatchOp::Set {
+                key: "a".into(),
+                value: Value::Num(9.0),
+            },
+            BatchOp::Set {
+                key: "b".into(),
+                value: Value::Num(9.0),
+            },
+        ])
+        .unwrap();
+        s.close().unwrap();
+        drop(s);
+
+        let wal = dir.path().join("tx.wal");
+        let len = std::fs::metadata(&wal).unwrap().len();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&wal)
+            .unwrap()
+            .set_len(len - 1)
+            .unwrap();
+
+        let reopened = Store::open(dir.path(), "tx", fast_opts()).unwrap();
+        assert_eq!(reopened.get("base"), Some(Value::Num(1.0)));
+        assert_eq!(reopened.get("a"), None, "torn batch must not partially apply");
+        assert_eq!(reopened.get("b"), None);
     }
 }

@@ -11,6 +11,7 @@ use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
+use std::time::Duration;
 
 use kv_core::{Durability, OpenOptions, Value};
 
@@ -74,6 +75,23 @@ unsafe fn data_slice<'a>(data: *const u8, len: usize) -> Result<&'a [u8], String
     }
 }
 
+/// Applies a transaction batch atomically as one WAL record (all-or-nothing on
+/// replay). `ptr`/`len` is the packed buffer `[u32 count]` + ops.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn scc_kv_apply_batch(
+    handle: *mut SccKvStore,
+    ptr: *const u8,
+    len: usize,
+) -> i32 {
+    guard(-1, || {
+        let s = unsafe { store(handle) }?;
+        let data = unsafe { data_slice(ptr, len) }?;
+        let ops = batch::decode_batch(data)?;
+        s.store.apply_batch(&ops).map_err(|e| e.to_string())?;
+        Ok(0)
+    })
+}
+
 /// Opens (or returns the already-open) persistent store `id` under `dir`.
 /// A non-empty `enc_key` passphrase enables encryption at rest (the 32-byte
 /// cipher key is derived via SHA-256). Returns NULL on error.
@@ -85,6 +103,8 @@ pub unsafe extern "C" fn scc_kv_open(
     recreate: bool,
     enc_key: *const u8,
     enc_key_len: usize,
+    max_entries: usize,
+    ttl_sweep_interval_ms: u64,
 ) -> *mut SccKvStore {
     guard(std::ptr::null_mut(), || {
         let dir = unsafe { cstr(dir, "dir") }?;
@@ -103,6 +123,12 @@ pub unsafe extern "C" fn scc_kv_open(
             },
             recreate,
             encryption_key,
+            max_entries: (max_entries > 0).then_some(max_entries),
+            ttl_sweep_interval: if ttl_sweep_interval_ms > 0 {
+                Duration::from_millis(ttl_sweep_interval_ms)
+            } else {
+                OpenOptions::default().ttl_sweep_interval
+            },
             ..OpenOptions::default()
         };
         let store = kv_core::open_or_get(Path::new(dir), id, opts).map_err(|e| e.to_string())?;
@@ -117,10 +143,17 @@ pub unsafe extern "C" fn scc_kv_open(
 
 /// Returns the named in-memory store, creating it on first use. NULL on error.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn scc_kv_in_memory(id: *const c_char) -> *mut SccKvStore {
+pub unsafe extern "C" fn scc_kv_in_memory(
+    id: *const c_char,
+    max_entries: usize,
+    ttl_sweep_interval_ms: u64,
+) -> *mut SccKvStore {
     guard(std::ptr::null_mut(), || {
         let id = unsafe { cstr(id, "id") }?;
-        let store = kv_core::in_memory(id);
+        let max = (max_entries > 0).then_some(max_entries);
+        let sweep =
+            (ttl_sweep_interval_ms > 0).then(|| Duration::from_millis(ttl_sweep_interval_ms));
+        let store = kv_core::in_memory(id, max, sweep);
         Ok(SccKvStore {
             store,
             dir: None,

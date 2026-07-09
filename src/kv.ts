@@ -27,19 +27,200 @@ export interface KVSubscription {
 function getTtlMs(options?: SetOptions): number | undefined {
   const ttl = options?.ttlMs
   if (ttl === undefined) return undefined
-  if (!Number.isSafeInteger(ttl) || ttl <= 0) {
-    throw new TypeError('ttlMs must be a positive safe integer')
+  return getPositiveSafeInteger(ttl, 'ttlMs')
+}
+
+function getPositiveSafeInteger(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new TypeError(`${name} must be a positive safe integer`)
   }
-  return ttl
+  return value
+}
+
+function getOptionalPositiveSafeInteger(
+  value: number | undefined,
+  name: string
+): number | undefined {
+  if (value === undefined) return undefined
+  return getPositiveSafeInteger(value, name)
+}
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'then' in value &&
+    typeof (value as { then?: unknown }).then === 'function'
+  )
+}
+
+const TAG_STR = 0
+const TAG_NUM = 1
+const TAG_BOOL = 2
+const TAG_BYTES = 3
+const TAG_JSON = 4
+
+interface EncodedOp {
+  del: boolean
+  key: string
+  tag?: number
+  bytes?: Uint8Array
+}
+
+function encodeValue(value: KVValue): { tag: number; bytes: Uint8Array } {
+  if (typeof value === 'string') {
+    return { tag: TAG_STR, bytes: new TextEncoder().encode(value) }
+  }
+  if (typeof value === 'number') {
+    const bytes = new Uint8Array(8)
+    new DataView(bytes.buffer).setFloat64(0, value, true)
+    return { tag: TAG_NUM, bytes }
+  }
+  if (typeof value === 'boolean') {
+    return { tag: TAG_BOOL, bytes: new Uint8Array([value ? 1 : 0]) }
+  }
+  return { tag: TAG_BYTES, bytes: new Uint8Array(value) }
+}
+
+/**
+ * Packs a transaction's staged ops into the wire format decoded by the native
+ * `applyBatch`: `[u32 count]` then each op `[u8 kind][u32 keyLen][key]` and,
+ * for a set (`kind === 1`), `[u8 tag][u32 valLen][val]`. All little-endian.
+ */
+function encodeBatch(ops: EncodedOp[]): ArrayBuffer {
+  const enc = new TextEncoder()
+  const parts = ops.map((op) => ({ ...op, keyBytes: enc.encode(op.key) }))
+  let size = 4
+  for (const p of parts) {
+    size += 1 + 4 + p.keyBytes.length
+    if (!p.del) size += 1 + 4 + p.bytes!.length
+  }
+  const out = new Uint8Array(size)
+  const view = new DataView(out.buffer)
+  let off = 0
+  view.setUint32(off, parts.length, true)
+  off += 4
+  for (const p of parts) {
+    out[off] = p.del ? 0 : 1
+    off += 1
+    view.setUint32(off, p.keyBytes.length, true)
+    off += 4
+    out.set(p.keyBytes, off)
+    off += p.keyBytes.length
+    if (!p.del) {
+      out[off] = p.tag!
+      off += 1
+      view.setUint32(off, p.bytes!.length, true)
+      off += 4
+      out.set(p.bytes!, off)
+      off += p.bytes!.length
+    }
+  }
+  return out.buffer
+}
+
+type PendingWrite =
+  | { kind: 'delete' }
+  | { kind: 'value'; value: KVValue }
+  | { kind: 'json'; value: unknown; json: string }
+
+export interface KVTransaction {
+  set(key: string, value: KVValue): void
+  setJSON(key: string, value: unknown): void
+  getString(key: string): string | undefined
+  getNumber(key: string): number | undefined
+  getBoolean(key: string): boolean | undefined
+  getBuffer(key: string): ArrayBuffer | undefined
+  getJSON<T = unknown>(key: string): T | undefined
+  contains(key: string): boolean
+  delete(key: string): void
+}
+
+class TransactionContext implements KVTransaction {
+  private readonly writes = new Map<string, PendingWrite>()
+
+  constructor(private readonly store: KV) {}
+
+  set(key: string, value: KVValue): void {
+    this.writes.set(key, { kind: 'value', value })
+  }
+
+  setJSON(key: string, value: unknown): void {
+    this.writes.set(key, { kind: 'json', value, json: JSON.stringify(value) })
+  }
+
+  getString(key: string): string | undefined {
+    const write = this.writes.get(key)
+    if (write !== undefined) {
+      return write.kind === 'value' && typeof write.value === 'string'
+        ? write.value
+        : undefined
+    }
+    return this.store.getString(key)
+  }
+
+  getNumber(key: string): number | undefined {
+    const write = this.writes.get(key)
+    if (write !== undefined) {
+      return write.kind === 'value' && typeof write.value === 'number'
+        ? write.value
+        : undefined
+    }
+    return this.store.getNumber(key)
+  }
+
+  getBoolean(key: string): boolean | undefined {
+    const write = this.writes.get(key)
+    if (write !== undefined) {
+      return write.kind === 'value' && typeof write.value === 'boolean'
+        ? write.value
+        : undefined
+    }
+    return this.store.getBoolean(key)
+  }
+
+  getBuffer(key: string): ArrayBuffer | undefined {
+    const write = this.writes.get(key)
+    if (write !== undefined) {
+      return write.kind === 'value' && write.value instanceof ArrayBuffer
+        ? write.value
+        : undefined
+    }
+    return this.store.getBuffer(key)
+  }
+
+  getJSON<T = unknown>(key: string): T | undefined {
+    const write = this.writes.get(key)
+    if (write !== undefined) {
+      return write.kind === 'json' ? (write.value as T) : undefined
+    }
+    return this.store.getJSON<T>(key)
+  }
+
+  contains(key: string): boolean {
+    const write = this.writes.get(key)
+    if (write !== undefined) return write.kind !== 'delete'
+    return this.store.contains(key)
+  }
+
+  delete(key: string): void {
+    this.writes.set(key, { kind: 'delete' })
+  }
+
+  drain(): Array<{ key: string; write: PendingWrite }> {
+    return [...this.writes].map(([key, write]) => ({ key, write }))
+  }
 }
 
 export class KV {
   private readonly native: SccKvInstance
   private readonly listeners = new Set<KVChangeListener>()
   private nativeSubscription: number | undefined
+  private readonly keyPrefix: string
 
-  constructor(native: SccKvInstance) {
+  constructor(native: SccKvInstance, keyPrefix = '') {
     this.native = native
+    this.keyPrefix = keyPrefix
   }
 
   /**
@@ -51,7 +232,9 @@ export class KV {
   addOnValueChangedListener(listener: KVChangeListener): KVSubscription {
     this.listeners.add(listener)
     this.nativeSubscription ??= this.native.addListener((key) => {
-      for (const l of this.listeners) l(key ?? null)
+      const localKey = this.toLocalChangedKey(key ?? null)
+      if (localKey === undefined) return
+      for (const l of this.listeners) l(localKey)
     })
     return {
       remove: () => {
@@ -67,65 +250,141 @@ export class KV {
     }
   }
 
+  /**
+   * Stages reads and writes through `tx`, then commits every staged write as a
+   * single atomic native batch (one WAL record — all of it survives a crash, or
+   * none of it). The callback must be synchronous; reads see prior staged writes.
+   */
+  transaction<T>(callback: (tx: KVTransaction) => T): T {
+    const tx = new TransactionContext(this)
+    const result = callback(tx)
+    if (isPromiseLike(result)) {
+      throw new TypeError('transaction callback must be synchronous')
+    }
+    const staged = tx.drain()
+    if (staged.length > 0) {
+      const ops = staged.map(({ key, write }): EncodedOp => {
+        const fullKey = this.fullKey(key)
+        if (write.kind === 'delete') return { del: true, key: fullKey }
+        if (write.kind === 'json') {
+          return {
+            del: false,
+            key: fullKey,
+            tag: TAG_JSON,
+            bytes: new TextEncoder().encode(write.json),
+          }
+        }
+        const { tag, bytes } = encodeValue(write.value)
+        return { del: false, key: fullKey, tag, bytes }
+      })
+      this.native.applyBatch(encodeBatch(ops))
+    }
+    return result
+  }
+
+  namespace(prefix: string): KV {
+    const normalized = prefix.endsWith(':') ? prefix : `${prefix}:`
+    return new KV(this.native, this.fullKey(normalized))
+  }
+
+  getKeysByPrefix(prefix: string): string[] {
+    const fullPrefix = this.fullKey(prefix)
+    return this.native.getAllKeys().filter((key) => key.startsWith(fullPrefix))
+  }
+
+  deleteByPrefix(prefix: string): number {
+    const keys = this.getKeysByPrefix(prefix)
+    let removed = 0
+    for (const key of keys) {
+      if (this.native.remove(key)) removed += 1
+    }
+    return removed
+  }
+
+  observeJSON<T = unknown, S = T | undefined>(
+    key: string,
+    selector: (value: T | undefined) => S,
+    listener: (selected: S) => void,
+    equals: (a: S, b: S) => boolean = Object.is
+  ): KVSubscription {
+    let selected = selector(this.getJSON<T>(key))
+    listener(selected)
+    return this.addOnValueChangedListener((changedKey) => {
+      if (changedKey !== null && changedKey !== key) return
+      const next = selector(this.getJSON<T>(key))
+      if (!equals(selected, next)) {
+        selected = next
+        listener(next)
+      }
+    })
+  }
+
   set(key: string, value: KVValue, options?: SetOptions): void {
     const ttl = getTtlMs(options)
+    const fullKey = this.fullKey(key)
     if (ttl !== undefined) {
-      if (typeof value === 'string') this.native.setStringTtl(key, value, ttl)
-      else if (typeof value === 'number') this.native.setNumberTtl(key, value, ttl)
-      else if (typeof value === 'boolean') this.native.setBooleanTtl(key, value, ttl)
-      else this.native.setBufferTtl(key, value, ttl)
+      if (typeof value === 'string') this.native.setStringTtl(fullKey, value, ttl)
+      else if (typeof value === 'number') this.native.setNumberTtl(fullKey, value, ttl)
+      else if (typeof value === 'boolean') this.native.setBooleanTtl(fullKey, value, ttl)
+      else this.native.setBufferTtl(fullKey, value, ttl)
       return
     }
-    if (typeof value === 'string') this.native.setString(key, value)
-    else if (typeof value === 'number') this.native.setNumber(key, value)
-    else if (typeof value === 'boolean') this.native.setBoolean(key, value)
-    else this.native.setBuffer(key, value)
+    if (typeof value === 'string') this.native.setString(fullKey, value)
+    else if (typeof value === 'number') this.native.setNumber(fullKey, value)
+    else if (typeof value === 'boolean') this.native.setBoolean(fullKey, value)
+    else this.native.setBuffer(fullKey, value)
   }
 
   setJSON(key: string, value: unknown, options?: SetOptions): void {
     const ttl = getTtlMs(options)
+    const json = JSON.stringify(value)
+    const fullKey = this.fullKey(key)
     if (ttl !== undefined) {
-      this.native.setJsonTtl(key, JSON.stringify(value), ttl)
+      this.native.setJsonTtl(fullKey, json, ttl)
       return
     }
-    this.native.setJson(key, JSON.stringify(value))
+    this.native.setJson(fullKey, json)
   }
 
   getString(key: string): string | undefined {
-    return this.native.getString(key)
+    return this.native.getString(this.fullKey(key))
   }
 
   getNumber(key: string): number | undefined {
-    return this.native.getNumber(key)
+    return this.native.getNumber(this.fullKey(key))
   }
 
   getBoolean(key: string): boolean | undefined {
-    return this.native.getBoolean(key)
+    return this.native.getBoolean(this.fullKey(key))
   }
 
   getBuffer(key: string): ArrayBuffer | undefined {
-    return this.native.getBuffer(key)
+    return this.native.getBuffer(this.fullKey(key))
   }
 
   getJSON<T = unknown>(key: string): T | undefined {
-    const json = this.native.getJson(key)
+    const json = this.native.getJson(this.fullKey(key))
     return json === undefined ? undefined : (JSON.parse(json) as T)
   }
 
   contains(key: string): boolean {
-    return this.native.contains(key)
+    return this.native.contains(this.fullKey(key))
   }
 
   delete(key: string): boolean {
-    return this.native.remove(key)
+    return this.native.remove(this.fullKey(key))
   }
 
   getAllKeys(): string[] {
-    return this.native.getAllKeys()
+    if (this.keyPrefix === '') return this.native.getAllKeys()
+    return this.getKeysByPrefix('').map((key) => key.slice(this.keyPrefix.length))
   }
 
-  clearAll(): void {
+  clearAll(): number {
+    if (this.keyPrefix !== '') return this.deleteByPrefix('')
+    const removed = this.size
     this.native.clearAll()
+    return removed
   }
 
   flush(): void {
@@ -136,17 +395,20 @@ export class KV {
   setMany(entries: Record<string, string>): void {
     const keys = Object.keys(entries)
     this.native.setManyString(
-      keys,
+      keys.map((key) => this.fullKey(key)),
       keys.map((k) => entries[k]!)
     )
   }
 
   /** Batch string read; missing keys come back as undefined. */
   getMany(keys: string[]): (string | undefined)[] {
-    return this.native.getManyString(keys).map((v) => v ?? undefined)
+    return this.native
+      .getManyString(keys.map((key) => this.fullKey(key)))
+      .map((v) => v ?? undefined)
   }
 
   get size(): number {
+    if (this.keyPrefix !== '') return this.getAllKeys().length
     return this.native.size()
   }
 
@@ -155,51 +417,57 @@ export class KV {
   }
 
   setAsync(key: string, value: KVValue): Promise<void> {
-    if (typeof value === 'string') return this.native.setStringAsync(key, value)
-    if (typeof value === 'number') return this.native.setNumberAsync(key, value)
+    const fullKey = this.fullKey(key)
+    if (typeof value === 'string') return this.native.setStringAsync(fullKey, value)
+    if (typeof value === 'number') return this.native.setNumberAsync(fullKey, value)
     if (typeof value === 'boolean')
-      return this.native.setBooleanAsync(key, value)
-    return this.native.setBufferAsync(key, value)
+      return this.native.setBooleanAsync(fullKey, value)
+    return this.native.setBufferAsync(fullKey, value)
   }
 
   setJSONAsync(key: string, value: unknown): Promise<void> {
-    return this.native.setJsonAsync(key, JSON.stringify(value))
+    return this.native.setJsonAsync(this.fullKey(key), JSON.stringify(value))
   }
 
   getStringAsync(key: string): Promise<string | undefined> {
-    return this.native.getStringAsync(key)
+    return this.native.getStringAsync(this.fullKey(key))
   }
 
   getNumberAsync(key: string): Promise<number | undefined> {
-    return this.native.getNumberAsync(key)
+    return this.native.getNumberAsync(this.fullKey(key))
   }
 
   getBooleanAsync(key: string): Promise<boolean | undefined> {
-    return this.native.getBooleanAsync(key)
+    return this.native.getBooleanAsync(this.fullKey(key))
   }
 
   getBufferAsync(key: string): Promise<ArrayBuffer | undefined> {
-    return this.native.getBufferAsync(key)
+    return this.native.getBufferAsync(this.fullKey(key))
   }
 
   async getJSONAsync<T = unknown>(key: string): Promise<T | undefined> {
-    const json = await this.native.getJsonAsync(key)
+    const json = await this.native.getJsonAsync(this.fullKey(key))
     return json === undefined ? undefined : (JSON.parse(json) as T)
   }
 
   containsAsync(key: string): Promise<boolean> {
-    return this.native.containsAsync(key)
+    return this.native.containsAsync(this.fullKey(key))
   }
 
   deleteAsync(key: string): Promise<boolean> {
-    return this.native.removeAsync(key)
+    return this.native.removeAsync(this.fullKey(key))
   }
 
   getAllKeysAsync(): Promise<string[]> {
-    return this.native.getAllKeysAsync()
+    if (this.keyPrefix === '') return this.native.getAllKeysAsync()
+    return Promise.resolve(this.getAllKeys())
   }
 
-  clearAllAsync(): Promise<void> {
+  async clearAllAsync(): Promise<void> {
+    if (this.keyPrefix !== '') {
+      this.clearAll()
+      return
+    }
     return this.native.clearAllAsync()
   }
 
@@ -210,26 +478,55 @@ export class KV {
   setManyAsync(entries: Record<string, string>): Promise<void> {
     const keys = Object.keys(entries)
     return this.native.setManyStringAsync(
-      keys,
+      keys.map((key) => this.fullKey(key)),
       keys.map((k) => entries[k]!)
     )
   }
 
   async getManyAsync(keys: string[]): Promise<(string | undefined)[]> {
-    const values = await this.native.getManyStringAsync(keys)
+    const values = await this.native.getManyStringAsync(
+      keys.map((key) => this.fullKey(key))
+    )
     return values.map((v) => v ?? undefined)
+  }
+
+  private fullKey(key: string): string {
+    return `${this.keyPrefix}${key}`
+  }
+
+  private toLocalChangedKey(key: string | null): string | null | undefined {
+    if (key === null) return null
+    if (this.keyPrefix === '') return key
+    if (!key.startsWith(this.keyPrefix)) return undefined
+    return key.slice(this.keyPrefix.length)
   }
 }
 
 export function createKV(options: KVOptions = {}): KV {
   const id = options.id ?? 'default'
+  const maxEntries = getOptionalPositiveSafeInteger(
+    options.maxEntries,
+    'maxEntries'
+  )
+  const ttlSweepIntervalMs = getOptionalPositiveSafeInteger(
+    options.ttlSweepIntervalMs,
+    'ttlSweepIntervalMs'
+  )
   if (options.persistence === 'none') {
-    return new KV(getFactory().inMemory(id))
+    return new KV(getFactory().inMemory(id, maxEntries, ttlSweepIntervalMs))
   }
   const dir = options.path ?? getBaseDirectory()
   const strict = options.durability === 'strict'
   return new KV(
-    getFactory().open(dir, id, strict, options.recreate ?? false, options.encryptionKey)
+    getFactory().open(
+      dir,
+      id,
+      strict,
+      options.recreate ?? false,
+      options.encryptionKey,
+      maxEntries,
+      ttlSweepIntervalMs
+    )
   )
 }
 

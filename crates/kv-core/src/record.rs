@@ -16,6 +16,30 @@ pub(crate) enum Op<'a> {
         value: &'a Value,
         expires_at_ms: u64,
     },
+    Batch {
+        ops: &'a [BatchSub<'a>],
+    },
+}
+
+pub(crate) enum BatchSub<'a> {
+    Set { key: &'a str, value: &'a Value },
+    Delete { key: &'a str },
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum OwnedBatchSub {
+    Set { key: String, value: Value },
+    Delete { key: String },
+}
+
+impl<'a> BatchSub<'a> {
+    #[cfg(test)]
+    pub(crate) fn from_owned(o: &'a OwnedBatchSub) -> BatchSub<'a> {
+        match o {
+            OwnedBatchSub::Set { key, value } => BatchSub::Set { key, value },
+            OwnedBatchSub::Delete { key } => BatchSub::Delete { key },
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -32,6 +56,9 @@ pub(crate) enum OwnedOp {
         key: String,
         value: Value,
         expires_at_ms: u64,
+    },
+    Batch {
+        ops: Vec<OwnedBatchSub>,
     },
 }
 
@@ -62,6 +89,22 @@ fn encoded_payload_len(op: &Op) -> Option<usize> {
         Op::Delete { key } => 1usize.checked_add(4)?.checked_add(key.len()),
         Op::Clear => Some(5),
         Op::SetTtl { key, value, .. } => encoded_set_len(key, value, 8),
+        Op::Batch { ops } => {
+            let mut n = 1usize.checked_add(4)?;
+            for sub in *ops {
+                let sub_len = match sub {
+                    BatchSub::Set { key, value } => 1usize
+                        .checked_add(4)?
+                        .checked_add(key.len())?
+                        .checked_add(1)?
+                        .checked_add(4)?
+                        .checked_add(value_len(value))?,
+                    BatchSub::Delete { key } => 1usize.checked_add(4)?.checked_add(key.len())?,
+                };
+                n = n.checked_add(sub_len)?;
+            }
+            Some(n)
+        }
     }
 }
 
@@ -117,6 +160,27 @@ pub(crate) fn encode(op: &Op, out: &mut Vec<u8>) {
             out.push(value.tag());
             value.encode_into(out);
         }
+        Op::Batch { ops } => {
+            out.push(4);
+            out.extend_from_slice(&(ops.len() as u32).to_le_bytes());
+            for sub in *ops {
+                match sub {
+                    BatchSub::Set { key, value } => {
+                        out.push(1);
+                        out.extend_from_slice(&(key.len() as u32).to_le_bytes());
+                        out.extend_from_slice(key.as_bytes());
+                        out.push(value.tag());
+                        out.extend_from_slice(&(value_len(value) as u32).to_le_bytes());
+                        value.encode_into(out);
+                    }
+                    BatchSub::Delete { key } => {
+                        out.push(0);
+                        out.extend_from_slice(&(key.len() as u32).to_le_bytes());
+                        out.extend_from_slice(key.as_bytes());
+                    }
+                }
+            }
+        }
     }
     let payload_len = (out.len() - payload_start) as u32;
     let crc = crc32fast::hash(&out[payload_start..]);
@@ -151,6 +215,9 @@ pub(crate) fn decode(buf: &[u8]) -> DecodeOutcome {
 }
 
 fn parse_payload(payload: &[u8]) -> Option<OwnedOp> {
+    if payload.first() == Some(&4) {
+        return parse_batch(&payload[1..]).map(|ops| OwnedOp::Batch { ops });
+    }
     if payload.len() < 5 {
         return None;
     }
@@ -192,6 +259,43 @@ fn parse_payload(payload: &[u8]) -> Option<OwnedOp> {
     }
 }
 
+fn parse_batch(mut rest: &[u8]) -> Option<Vec<OwnedBatchSub>> {
+    if rest.len() < 4 {
+        return None;
+    }
+    let count = u32::from_le_bytes(rest[0..4].try_into().unwrap()) as usize;
+    rest = &rest[4..];
+    let mut ops = Vec::with_capacity(count.min(1024));
+    for _ in 0..count {
+        let kind = *rest.first()?;
+        let key_len = u32::from_le_bytes(rest.get(1..5)?.try_into().ok()?) as usize;
+        let key_end = 5usize.checked_add(key_len)?;
+        let key = std::str::from_utf8(rest.get(5..key_end)?).ok()?.to_string();
+        match kind {
+            0 => {
+                ops.push(OwnedBatchSub::Delete { key });
+                rest = &rest[key_end..];
+            }
+            1 => {
+                let tag = *rest.get(key_end)?;
+                let val_len =
+                    u32::from_le_bytes(rest.get(key_end + 1..key_end + 5)?.try_into().ok()?) as usize;
+                let val_start = key_end + 5;
+                let val_end = val_start.checked_add(val_len)?;
+                let value = Value::decode(tag, rest.get(val_start..val_end)?)?;
+                ops.push(OwnedBatchSub::Set { key, value });
+                rest = &rest[val_end..];
+            }
+            _ => return None,
+        }
+    }
+    if rest.is_empty() {
+        Some(ops)
+    } else {
+        None
+    }
+}
+
 pub(crate) fn apply(map: &crate::ValueMap, op: OwnedOp) {
     match op {
         OwnedOp::Set { key, value } => insert_slot(map, key, value, 0),
@@ -205,6 +309,16 @@ pub(crate) fn apply(map: &crate::ValueMap, op: OwnedOp) {
         }
         OwnedOp::Clear => {
             map.clear_sync();
+        }
+        OwnedOp::Batch { ops } => {
+            for sub in ops {
+                match sub {
+                    OwnedBatchSub::Set { key, value } => insert_slot(map, key, value, 0),
+                    OwnedBatchSub::Delete { key } => {
+                        map.remove_sync(&key);
+                    }
+                }
+            }
         }
     }
 }
@@ -329,5 +443,33 @@ mod tests {
         zero.extend_from_slice(&0u32.to_le_bytes());
         zero.extend_from_slice(&[0u8; 4]);
         assert_eq!(decode(&zero), DecodeOutcome::Corrupt);
+    }
+
+    #[test]
+    fn batch_round_trips() {
+        let subs = [
+            OwnedBatchSub::Set {
+                key: "a".into(),
+                value: Value::Num(2.0),
+            },
+            OwnedBatchSub::Set {
+                key: "meta".into(),
+                value: Value::Json(r#"{"n":2}"#.into()),
+            },
+            OwnedBatchSub::Delete { key: "old".into() },
+        ];
+        let borrowed: Vec<BatchSub> = subs.iter().map(BatchSub::from_owned).collect();
+        let mut buf = Vec::new();
+        encode(&Op::Batch { ops: &borrowed }, &mut buf);
+        match decode(&buf) {
+            DecodeOutcome::Record {
+                op: OwnedOp::Batch { ops },
+                consumed,
+            } => {
+                assert_eq!(consumed, buf.len());
+                assert_eq!(ops.as_slice(), &subs[..]);
+            }
+            other => panic!("expected batch record, got {other:?}"),
+        }
     }
 }

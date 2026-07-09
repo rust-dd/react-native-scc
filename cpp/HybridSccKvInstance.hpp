@@ -60,6 +60,12 @@ public:
     setRaw(key, 4, reinterpret_cast<const uint8_t*>(json.data()), json.size());
   }
 
+  void applyBatch(const std::shared_ptr<ArrayBuffer>& packed) override {
+    if (scc_kv_apply_batch(_handle, packed->data(), packed->size()) != 0) {
+      throwLastError("applyBatch");
+    }
+  }
+
   std::optional<std::string> getString(const std::string& key) override {
     return getStringLike(key, 0);
   }

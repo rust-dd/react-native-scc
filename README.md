@@ -14,9 +14,10 @@ The design goal is simple: **every read is a RAM lookup, every write is durable,
 - **Durable by default** — write-ahead log with group commits, atomic snapshot compaction, CRC-protected recovery
 - **Sync and async APIs** — sync for the hot path, `*Async` variants on Nitro's thread pool for anything that must not block the JS thread
 - **Batch operations** — `setMany`/`getMany` cross the bridge once for a whole record set
+- **Transactions + namespaces** — atomic sync transactions, prefix helpers, and scoped KV views
 - **Encryption at rest** — opt-in ChaCha20-Poly1305 per instance, snapshot and WAL both encrypted
 - **TTL + eviction** — per-key expiry with a background sweeper, optional `maxEntries` cap
-- **Native change events** — listeners and hooks react to writes made through any handle of the same store
+- **Native change events** — listeners, selectors, and hooks react to writes made through any handle of the same store
 - **React hooks** — `useKVString`, `useKVNumber`, `useKVBoolean`, `useKVBuffer`, `useKVJSON`
 - **State-manager adapters** — zustand persist, jotai `atomWithKV`, redux-persist engine as subpath exports
 - **Zero-config persistence** — storage lands in the platform app-data directory (iOS: Application Support, Android: `filesDir`)
@@ -100,7 +101,7 @@ const cache    = createKV({ id: 'cache' })                          // relaxed (
 const ui       = createKV({ id: 'ui', persistence: 'none' })        // pure in-memory, no files
 ```
 
-Options: `id`, `path` (override the storage directory), `persistence: 'wal' | 'none'`, `durability: 'relaxed' | 'strict'`, `recreate` (wipe on open), `encryptionKey` (see below).
+Options: `id`, `path` (override the storage directory), `persistence: 'wal' | 'none'`, `durability: 'relaxed' | 'strict'`, `recreate` (wipe on open), `encryptionKey` (see below), `maxEntries`, and `ttlSweepIntervalMs`.
 
 ### Encryption at rest
 
@@ -121,7 +122,44 @@ Expired keys read as missing immediately (`get`, `contains`, `getAllKeys` all ag
 
 ### Eviction
 
-Persistent instances accept a `maxEntries` cap at the native layer (exposed through `OpenOptions` in the Rust core): when the store outgrows it, the sweeper evicts expired keys first, then arbitrary live keys until it fits. Eviction order is unspecified (not LRU) — use it as a safety cap, not a cache policy.
+```ts
+const cache = createKV({
+  id: 'cache',
+  maxEntries: 10_000,
+  ttlSweepIntervalMs: 5_000,
+})
+```
+
+When the store outgrows `maxEntries`, the sweeper evicts expired keys first, then arbitrary live keys until it fits. Eviction order is unspecified (not LRU) — use it as a safety cap, not a cache policy.
+
+### Transactions
+
+```ts
+const next = kv.transaction((tx) => {
+  const current = tx.getNumber('counter') ?? 0
+  tx.set('counter', current + 1)
+  tx.setJSON('counter.meta', { updatedAt: Date.now() })
+  return current + 1
+})
+```
+
+Transactions are synchronous and atomic: the callback stages writes in JS and sees its own staged values, then commits them as a single native batch — one WAL record, so a crash leaves either all of the writes or none of them. Async callbacks are rejected so the library never holds transactional state across an `await`.
+
+### Prefixes and namespaces
+
+```ts
+const user = kv.namespace('user:123')
+
+user.set('name', 'Ada')              // stores user:123:name
+user.setJSON('prefs', { theme: 'dark' })
+user.getAllKeys()                    // ['name', 'prefs']
+user.clearAll()                      // deletes only user:123:* keys
+
+kv.getKeysByPrefix('user:123:')      // full keys
+kv.deleteByPrefix('cache:')
+```
+
+Namespaces are lightweight JS views over the same underlying store. They do not create extra files or WAL threads.
 
 ### Hooks
 
@@ -136,6 +174,13 @@ function Counter() {
 
 Each hook returns `[value, setValue]`; calling `setValue(undefined)` deletes the key. Hooks re-render on any write to the key, including writes made through other KV objects opened with the same id.
 
+```tsx
+const theme = useKVSelector<{ theme?: string }, string | undefined>(
+  'settings',
+  (settings) => settings?.theme
+)
+```
+
 ### Change listener
 
 The listener fires for every mutation of the underlying store, from any handle. `key` is `null` after `clearAll` ("everything changed"). Delivery is asynchronous on the JS thread.
@@ -145,6 +190,16 @@ const sub = kv.addOnValueChangedListener((key) => {
   console.log(key === null ? 'store cleared' : `changed: ${key}`)
 })
 sub.remove()
+```
+
+Selectors sit on top of the same listener and only fire when the selected value changes:
+
+```ts
+const sub = kv.observeJSON(
+  'settings',
+  (settings: { theme?: string } | undefined) => settings?.theme,
+  (theme) => console.log('theme changed', theme)
+)
 ```
 
 ## Adapters
@@ -196,6 +251,11 @@ const persistedReducer = persistReducer(
 | `set(key, value)` | `setAsync` | `void` — value: `string \| number \| boolean \| ArrayBuffer` |
 | `setJSON(key, value)` | `setJSONAsync` | `void` |
 | `setMany(entries)` | `setManyAsync` | `void` — `Record<string, string>` |
+| `transaction(callback)` | — | callback return value |
+| `namespace(prefix)` | — | scoped `KV` view |
+| `getKeysByPrefix(prefix)` | — | `string[]` |
+| `deleteByPrefix(prefix)` | — | `number` |
+| `observeJSON(key, selector, listener)` | — | `KVSubscription` |
 | `getString(key)` | `getStringAsync` | `string \| undefined` |
 | `getNumber(key)` | `getNumberAsync` | `number \| undefined` |
 | `getBoolean(key)` | `getBooleanAsync` | `boolean \| undefined` |
@@ -205,7 +265,7 @@ const persistedReducer = persistReducer(
 | `contains(key)` | `containsAsync` | `boolean` |
 | `delete(key)` | `deleteAsync` | `boolean` |
 | `getAllKeys()` | `getAllKeysAsync` | `string[]` |
-| `clearAll()` | `clearAllAsync` | `void` |
+| `clearAll()` | `clearAllAsync` | `number` sync, `void` async |
 | `flush()` | `flushAsync` | `void` — blocks until fsynced |
 | `size` | — | `number` |
 | `close()` | — | `void` |

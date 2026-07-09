@@ -21,53 +21,46 @@ extern "C" {
 #endif // __cplusplus
 
 /**
+ * Applies a transaction batch atomically as one WAL record (all-or-nothing on
+ * replay). `ptr`/`len` is the packed buffer `[u32 count]` + ops.
+ */
+int32_t scc_kv_apply_batch(struct SccKvStore *handle, const uint8_t *ptr, uintptr_t len);
+
+/**
  * Opens (or returns the already-open) persistent store `id` under `dir`.
  * A non-empty `enc_key` passphrase enables encryption at rest (the 32-byte
  * cipher key is derived via SHA-256). Returns NULL on error.
- *
- * # Safety
- * `dir` and `id` must be valid NUL-terminated strings or NULL; `enc_key`
- * must be valid for `enc_key_len` bytes or NULL.
  */
 struct SccKvStore *scc_kv_open(const char *dir,
                                const char *id,
                                bool strict,
                                bool recreate,
                                const uint8_t *enc_key,
-                               uintptr_t enc_key_len);
+                               uintptr_t enc_key_len,
+                               uintptr_t max_entries,
+                               uint64_t ttl_sweep_interval_ms);
 
 /**
  * Returns the named in-memory store, creating it on first use. NULL on error.
- *
- * # Safety
- * `id` must be a valid NUL-terminated string or NULL.
  */
-struct SccKvStore *scc_kv_in_memory(const char *id);
+struct SccKvStore *scc_kv_in_memory(const char *id,
+                                    uintptr_t max_entries,
+                                    uint64_t ttl_sweep_interval_ms);
 
 /**
  * Closes the underlying store and removes it from the registry. 0 ok, -1 error.
  * The handle itself must still be released with `scc_kv_release`.
- *
- * # Safety
- * `h` must be a live handle from `scc_kv_open`/`scc_kv_in_memory` or NULL.
  */
 int32_t scc_kv_close(struct SccKvStore *h);
 
 /**
  * Frees the handle. The store stays registered (reopen returns it) unless
  * `scc_kv_close` was called first.
- *
- * # Safety
- * `h` must come from this library and be released at most once.
  */
 void scc_kv_release(struct SccKvStore *h);
 
 /**
  * Sets `key` to the value encoded as (tag, data, len). 0 ok, -1 error.
- *
- * # Safety
- * Pointers must be valid for their stated lengths or NULL; `key` must be
- * valid UTF-8 (asserted in debug builds).
  */
 int32_t scc_kv_set(struct SccKvStore *h,
                    const uint8_t *key,
@@ -79,9 +72,6 @@ int32_t scc_kv_set(struct SccKvStore *h,
 /**
  * Reads `key`. 1 found (out params set, buffer freed via `scc_kv_free`),
  * 0 missing, -1 error.
- *
- * # Safety
- * Pointers must be valid or NULL; `key` must be valid UTF-8.
  */
 int32_t scc_kv_get(struct SccKvStore *h,
                    const uint8_t *key,
@@ -92,50 +82,32 @@ int32_t scc_kv_get(struct SccKvStore *h,
 
 /**
  * 1 if `key` exists, 0 if not, -1 on error.
- *
- * # Safety
- * Pointers must be valid or NULL; `key` must be valid UTF-8.
  */
 int32_t scc_kv_contains(struct SccKvStore *h, const uint8_t *key, uintptr_t key_len);
 
 /**
  * 1 removed, 0 missing, -1 error.
- *
- * # Safety
- * Pointers must be valid or NULL; `key` must be valid UTF-8.
  */
 int32_t scc_kv_remove(struct SccKvStore *h, const uint8_t *key, uintptr_t key_len);
 
 /**
  * All keys packed as repeated `[u32 len LE][utf8 bytes]`. Empty store:
  * NULL with *out_len = 0. Error: NULL with *out_len = 1.
- *
- * # Safety
- * Pointers must be valid or NULL.
  */
 uint8_t *scc_kv_keys(struct SccKvStore *h, uintptr_t *out_len);
 
 /**
  * 0 ok, -1 error.
- *
- * # Safety
- * `h` must be a live handle or NULL.
  */
 int32_t scc_kv_clear(struct SccKvStore *h);
 
 /**
  * Durability barrier: blocks until the WAL is drained and fsynced. 0 ok, -1 error.
- *
- * # Safety
- * `h` must be a live handle or NULL.
  */
 int32_t scc_kv_flush(struct SccKvStore *h);
 
 /**
  * Number of keys. 0 on a null handle (with error set).
- *
- * # Safety
- * `h` must be a live handle or NULL.
  */
 uint64_t scc_kv_len(struct SccKvStore *h);
 
@@ -144,10 +116,6 @@ uint64_t scc_kv_len(struct SccKvStore *h);
  * heap allocation. Returns 1 found (with `*out_len` set; bytes are copied
  * only when `*out_len <= cap` — otherwise call again with a larger buffer),
  * 0 missing or type mismatch, -1 error.
- *
- * # Safety
- * `buf` must be valid for `cap` bytes; out pointers must be valid; `key`
- * must be valid UTF-8.
  */
 int32_t scc_kv_get_raw(struct SccKvStore *h,
                        const uint8_t *key,
@@ -159,26 +127,16 @@ int32_t scc_kv_get_raw(struct SccKvStore *h,
 
 /**
  * Zero-allocation number read. 1 found, 0 missing/type mismatch, -1 error.
- *
- * # Safety
- * Pointers must be valid or NULL; `key` must be valid UTF-8.
  */
 int32_t scc_kv_get_f64(struct SccKvStore *h, const uint8_t *key, uintptr_t key_len, double *out);
 
 /**
  * Zero-allocation boolean read. 1 found, 0 missing/type mismatch, -1 error.
- *
- * # Safety
- * Pointers must be valid or NULL; `key` must be valid UTF-8.
  */
 int32_t scc_kv_get_bool(struct SccKvStore *h, const uint8_t *key, uintptr_t key_len, bool *out);
 
 /**
  * Sets `key` with a TTL: the entry expires `ttl_ms` from now. 0 ok, -1 error.
- *
- * # Safety
- * Pointers must be valid for their stated lengths or NULL; `key` must be
- * valid UTF-8.
  */
 int32_t scc_kv_set_ttl(struct SccKvStore *h,
                        const uint8_t *key,
@@ -190,11 +148,6 @@ int32_t scc_kv_set_ttl(struct SccKvStore *h,
 
 /**
  * Fast-path string set: no tag round trip, no UTF-8 scan. 0 ok, -1 error.
- *
- * # Safety
- * `data` MUST be valid UTF-8 of length `len` — guaranteed for strings
- * arriving from JS through JSI and asserted in debug builds; violating it
- * in release builds is undefined behavior.
  */
 int32_t scc_kv_set_str(struct SccKvStore *h,
                        const uint8_t *key,
@@ -204,17 +157,11 @@ int32_t scc_kv_set_str(struct SccKvStore *h,
 
 /**
  * Fast-path number set. 0 ok, -1 error.
- *
- * # Safety
- * `h`/`key` must be valid or NULL; `key` must be valid UTF-8.
  */
 int32_t scc_kv_set_f64(struct SccKvStore *h, const uint8_t *key, uintptr_t key_len, double value);
 
 /**
  * Fast-path boolean set. 0 ok, -1 error.
- *
- * # Safety
- * `h`/`key` must be valid or NULL; `key` must be valid UTF-8.
  */
 int32_t scc_kv_set_bool(struct SccKvStore *h, const uint8_t *key, uintptr_t key_len, bool value);
 
@@ -222,10 +169,6 @@ int32_t scc_kv_set_bool(struct SccKvStore *h, const uint8_t *key, uintptr_t key_
  * Batch string set. `data` holds `count` packed entries, each
  * `[u32 key_len LE][key][u32 val_len LE][val]`. All records land in a single
  * WAL append; a malformed buffer applies nothing. 0 ok, -1 error.
- *
- * # Safety
- * `data` must be valid for `len` bytes; keys and values must be valid UTF-8
- * (asserted in debug builds).
  */
 int32_t scc_kv_set_many_str(struct SccKvStore *h,
                             const uint8_t *data,
@@ -234,26 +177,16 @@ int32_t scc_kv_set_many_str(struct SccKvStore *h,
 
 /**
  * Subscribes to change events. Returns a listener id (> 0), or 0 on error.
- *
- * # Safety
- * `cb` must be callable with `user_data` from any thread until
- * `scc_kv_unsubscribe` returns for the returned id.
  */
 uint64_t scc_kv_subscribe(struct SccKvStore *h, SccKvListener cb, void *user_data);
 
 /**
  * 1 removed, 0 unknown id, -1 error.
- *
- * # Safety
- * `h` must be a live handle or NULL.
  */
 int32_t scc_kv_unsubscribe(struct SccKvStore *h, uint64_t id);
 
 /**
  * Frees a buffer returned by `scc_kv_get` / `scc_kv_keys`.
- *
- * # Safety
- * `(ptr, len)` must come from this library and be freed at most once.
  */
 void scc_kv_free(uint8_t *ptr, uintptr_t len);
 
@@ -265,10 +198,6 @@ char *scc_kv_last_error(void);
 
 /**
  * Frees a string returned by `scc_kv_last_error`.
- *
- * # Safety
- * `s` must be a pointer returned by this library's string-returning functions,
- * freed at most once.
  */
 void scc_kv_free_cstring(char *s);
 

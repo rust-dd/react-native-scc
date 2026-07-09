@@ -29,6 +29,7 @@ export interface SccKvInstance extends HybridObject<{
     setJsonTtl(key: string, json: string, ttlMs: number): void;
     setManyString(keys: string[], values: string[]): void;
     getManyString(keys: string[]): (string | null)[];
+    applyBatch(packed: ArrayBuffer): void;
     setStringAsync(key: string, value: string): Promise<void>;
     setNumberAsync(key: string, value: number): Promise<void>;
     setBooleanAsync(key: string, value: boolean): Promise<void>;

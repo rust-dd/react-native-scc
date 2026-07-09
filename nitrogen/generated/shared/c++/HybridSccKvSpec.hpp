@@ -52,8 +52,8 @@ namespace margelo::nitro::scckv {
 
     public:
       // Methods
-      virtual std::shared_ptr<HybridSccKvInstanceSpec> open(const std::string& dir, const std::string& id, bool strictDurability, bool recreate, const std::optional<std::string>& encryptionKey) = 0;
-      virtual std::shared_ptr<HybridSccKvInstanceSpec> inMemory(const std::string& id) = 0;
+      virtual std::shared_ptr<HybridSccKvInstanceSpec> open(const std::string& dir, const std::string& id, bool strictDurability, bool recreate, const std::optional<std::string>& encryptionKey, std::optional<double> maxEntries, std::optional<double> ttlSweepIntervalMs) = 0;
+      virtual std::shared_ptr<HybridSccKvInstanceSpec> inMemory(const std::string& id, std::optional<double> maxEntries, std::optional<double> ttlSweepIntervalMs) = 0;
 
     protected:
       // Hybrid Setup

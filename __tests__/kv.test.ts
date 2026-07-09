@@ -38,6 +38,108 @@ test('batch setMany/getMany round-trips with null for missing', async () => {
   await expect(kv.getManyAsync(['d', 'a'])).resolves.toEqual(['4', '1'])
 })
 
+test('transaction stages reads and writes atomically', () => {
+  const kv = createKV({ id: 'tx' })
+  kv.set('counter', 1)
+
+  const result = kv.transaction((tx) => {
+    const next = (tx.getNumber('counter') ?? 0) + 1
+    tx.set('counter', next)
+    tx.setJSON('meta', { next })
+    expect(tx.getNumber('counter')).toBe(2)
+    return next
+  })
+
+  expect(result).toBe(2)
+  expect(kv.getNumber('counter')).toBe(2)
+  expect(kv.getJSON<{ next: number }>('meta')?.next).toBe(2)
+})
+
+test('transaction rejects async callbacks', () => {
+  const kv = createKV({ id: 'tx-async' })
+
+  expect(() =>
+    kv.transaction(() => Promise.resolve(undefined) as never)
+  ).toThrow(/synchronous/)
+})
+
+test('transaction applies delete + mixed writes atomically', () => {
+  const kv = createKV({ id: 'txmix' })
+  kv.set('drop', 'x')
+  kv.set('n', 1)
+
+  kv.transaction((tx) => {
+    tx.set('n', (tx.getNumber('n') ?? 0) + 1)
+    tx.setJSON('meta', { ok: true })
+    tx.delete('drop')
+  })
+
+  expect(kv.getNumber('n')).toBe(2)
+  expect(kv.getJSON<{ ok: boolean }>('meta')?.ok).toBe(true)
+  expect(kv.contains('drop')).toBe(false)
+})
+
+test('namespaced transaction scopes committed keys', () => {
+  const kv = createKV({ id: 'txns' })
+  const user = kv.namespace('u:1')
+
+  user.transaction((tx) => {
+    tx.set('name', 'Ada')
+  })
+
+  expect(user.getString('name')).toBe('Ada')
+  expect(kv.getString('u:1:name')).toBe('Ada')
+})
+
+test('createKV validates eviction options for in-memory stores', () => {
+  expect(() =>
+    createKV({ id: 'evbad', persistence: 'none', maxEntries: -1 })
+  ).toThrow(/maxEntries/)
+  expect(() =>
+    createKV({ id: 'evok', persistence: 'none', maxEntries: 100 })
+  ).not.toThrow()
+})
+
+test('namespace scopes keys and prefix operations', () => {
+  const kv = createKV({ id: 'prefix' })
+  const user = kv.namespace('user:1')
+  user.set('name', 'Ada')
+  user.setJSON('prefs', { theme: 'dark' })
+  kv.set('user:2:name', 'Grace')
+
+  expect(user.getString('name')).toBe('Ada')
+  expect(kv.getKeysByPrefix('user:1:').sort()).toEqual([
+    'user:1:name',
+    'user:1:prefs',
+  ])
+  expect(user.getAllKeys().sort()).toEqual(['name', 'prefs'])
+  expect(user.size).toBe(2)
+  expect(user.clearAll()).toBe(2)
+  expect(kv.getString('user:1:name')).toBeUndefined()
+  expect(kv.getString('user:2:name')).toBe('Grace')
+})
+
+test('observeJSON emits selected changes only', async () => {
+  const kv = createKV({ id: 'observe' })
+  kv.setJSON('settings', { theme: 'dark', volume: 1 })
+  const events: Array<string | undefined> = []
+
+  const sub = kv.observeJSON<{ theme: string; volume: number }, string | undefined>(
+    'settings',
+    (value) => value?.theme,
+    (theme) => events.push(theme)
+  )
+
+  kv.setJSON('settings', { theme: 'dark', volume: 2 })
+  kv.setJSON('settings', { theme: 'light', volume: 2 })
+  await flushMicrotasks()
+  sub.remove()
+  kv.setJSON('settings', { theme: 'blue', volume: 2 })
+  await flushMicrotasks()
+
+  expect(events).toEqual(['dark', 'light'])
+})
+
 test('ttl option expires values', async () => {
   const kv = createKV({ id: 't5', encryptionKey: 'secret' })
   kv.set('tmp', 'v', { ttlMs: 30 })

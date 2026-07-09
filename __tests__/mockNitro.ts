@@ -91,6 +91,43 @@ function mockMakeInstance(store: FakeStore) {
       keys.forEach((k, i) => set(k, 0, values[i]))
     },
     getManyString: (keys: string[]) => keys.map((k) => get(k, 0) ?? null),
+    applyBatch: (packed: ArrayBuffer) => {
+      const view = new DataView(packed)
+      const raw = new Uint8Array(packed)
+      const dec = new TextDecoder()
+      let off = 0
+      const count = view.getUint32(off, true)
+      off += 4
+      for (let i = 0; i < count; i++) {
+        const kind = raw[off]
+        off += 1
+        const keyLen = view.getUint32(off, true)
+        off += 4
+        const key = dec.decode(raw.subarray(off, off + keyLen))
+        off += keyLen
+        if (kind === 0) {
+          if (store.map.delete(key)) store.notify(key)
+          continue
+        }
+        const tag = raw[off]!
+        off += 1
+        const valLen = view.getUint32(off, true)
+        off += 4
+        const valBytes = raw.subarray(off, off + valLen)
+        off += valLen
+        let value: unknown
+        if (tag === 0 || tag === 4) value = dec.decode(valBytes)
+        else if (tag === 1)
+          value = new DataView(
+            valBytes.buffer,
+            valBytes.byteOffset,
+            valBytes.byteLength
+          ).getFloat64(0, true)
+        else if (tag === 2) value = valBytes[0] === 1
+        else value = valBytes.slice().buffer
+        set(key, tag, value)
+      }
+    },
   }
   const withAsync: Record<string, unknown> = { ...instance }
   for (const [name, fn] of Object.entries(instance)) {

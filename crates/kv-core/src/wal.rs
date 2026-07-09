@@ -212,6 +212,9 @@ impl Writer {
             let d = self.last_sync + self.cfg.fsync_interval;
             deadline = Some(deadline.map_or(d, |x: Instant| x.min(d)));
         }
+        if let Some(d) = self.last_sweep.checked_add(self.cfg.sweep_interval) {
+            deadline = Some(deadline.map_or(d, |x: Instant| x.min(d)));
+        }
         match deadline {
             Some(d) => d
                 .saturating_duration_since(now)
@@ -248,26 +251,7 @@ impl Writer {
     /// like any other mutation.
     fn sweep_and_evict(&mut self) {
         let now = crate::now_ms();
-        let mut doomed: Vec<String> = Vec::new();
-        self.map.iter_sync(|k, slot| {
-            if slot.is_expired(now) {
-                doomed.push(k.clone());
-            }
-            doomed.len() < 4096
-        });
-        if let Some(max) = self.cfg.max_entries {
-            let live = self.map.len().saturating_sub(doomed.len());
-            if live > max {
-                let mut need = live - max;
-                self.map.iter_sync(|k, slot| {
-                    if !slot.is_expired(now) {
-                        doomed.push(k.clone());
-                        need -= 1;
-                    }
-                    need > 0
-                });
-            }
-        }
+        let doomed = crate::compute_doomed(&self.map, now, self.cfg.max_entries);
         for key in doomed {
             if self.map.remove_sync(&key).is_some() {
                 if self.first_pending.is_none() {

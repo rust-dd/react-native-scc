@@ -73,3 +73,40 @@ fn advance(data: &[u8], off: usize, by: usize, what: &str) -> Result<usize, Stri
         _ => Err(format!("truncated {what}")),
     }
 }
+
+/// Decodes the transaction batch buffer built by the TS layer: `[u32 count]`
+/// then `count` ops, each `[u8 kind][u32 key_len][key]` and, for `kind == 1`
+/// (set), `[u8 tag][u32 val_len][val]`. `kind == 0` is delete.
+pub(crate) fn decode_batch(data: &[u8]) -> Result<Vec<kv_core::BatchOp>, String> {
+    let mut off = 0usize;
+    let count = read_u32(data, &mut off)? as usize;
+    let mut ops = Vec::with_capacity(count.min(4096));
+    for _ in 0..count {
+        let kind = *data.get(off).ok_or("truncated batch op kind")?;
+        off += 1;
+        let klen = read_u32(data, &mut off)? as usize;
+        let key_end = advance(data, off, klen, "batch key")?;
+        let key = std::str::from_utf8(&data[off..key_end])
+            .map_err(|_| "batch key is not UTF-8".to_string())?
+            .to_string();
+        off = key_end;
+        match kind {
+            0 => ops.push(kv_core::BatchOp::Delete { key }),
+            1 => {
+                let tag = *data.get(off).ok_or("truncated batch tag")?;
+                off += 1;
+                let vlen = read_u32(data, &mut off)? as usize;
+                let val_end = advance(data, off, vlen, "batch value")?;
+                let value = kv_core::Value::decode(tag, &data[off..val_end])
+                    .ok_or("invalid batch value encoding")?;
+                off = val_end;
+                ops.push(kv_core::BatchOp::Set { key, value });
+            }
+            _ => return Err(format!("unknown batch op kind {kind}")),
+        }
+    }
+    if off != data.len() {
+        return Err("trailing bytes in batch buffer".to_string());
+    }
+    Ok(ops)
+}

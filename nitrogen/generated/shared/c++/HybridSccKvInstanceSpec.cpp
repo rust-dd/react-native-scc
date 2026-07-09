@@ -40,6 +40,7 @@ namespace margelo::nitro::scckv {
       prototype.registerHybridMethod("setJsonTtl", &HybridSccKvInstanceSpec::setJsonTtl);
       prototype.registerHybridMethod("setManyString", &HybridSccKvInstanceSpec::setManyString);
       prototype.registerHybridMethod("getManyString", &HybridSccKvInstanceSpec::getManyString);
+      prototype.registerHybridMethod("applyBatch", &HybridSccKvInstanceSpec::applyBatch);
       prototype.registerHybridMethod("setStringAsync", &HybridSccKvInstanceSpec::setStringAsync);
       prototype.registerHybridMethod("setNumberAsync", &HybridSccKvInstanceSpec::setNumberAsync);
       prototype.registerHybridMethod("setBooleanAsync", &HybridSccKvInstanceSpec::setBooleanAsync);

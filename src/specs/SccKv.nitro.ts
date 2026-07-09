@@ -7,7 +7,13 @@ export interface SccKv extends HybridObject<{ ios: 'c++'; android: 'c++' }> {
     id: string,
     strictDurability: boolean,
     recreate: boolean,
-    encryptionKey?: string
+    encryptionKey?: string,
+    maxEntries?: number,
+    ttlSweepIntervalMs?: number
   ): SccKvInstance
-  inMemory(id: string): SccKvInstance
+  inMemory(
+    id: string,
+    maxEntries?: number,
+    ttlSweepIntervalMs?: number
+  ): SccKvInstance
 }

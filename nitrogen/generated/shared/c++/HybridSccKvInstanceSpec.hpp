@@ -81,6 +81,7 @@ namespace margelo::nitro::scckv {
       virtual void setJsonTtl(const std::string& key, const std::string& json, double ttlMs) = 0;
       virtual void setManyString(const std::vector<std::string>& keys, const std::vector<std::string>& values) = 0;
       virtual std::vector<std::variant<nitro::NullType, std::string>> getManyString(const std::vector<std::string>& keys) = 0;
+      virtual void applyBatch(const std::shared_ptr<ArrayBuffer>& packed) = 0;
       virtual std::shared_ptr<Promise<void>> setStringAsync(const std::string& key, const std::string& value) = 0;
       virtual std::shared_ptr<Promise<void>> setNumberAsync(const std::string& key, double value) = 0;
       virtual std::shared_ptr<Promise<void>> setBooleanAsync(const std::string& key, bool value) = 0;
