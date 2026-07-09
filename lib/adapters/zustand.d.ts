@@ -1,7 +1,7 @@
 import type { StateStorage } from 'zustand/middleware';
 import { type KV } from '../kv';
 /**
- * zustand persist storage backed by react-native-scc. Synchronous, so
+ * zustand persist storage over a KV instance. Synchronous, so
  * hydration completes without an async gap:
  *
  * persist(config, {

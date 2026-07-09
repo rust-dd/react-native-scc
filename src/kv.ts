@@ -24,6 +24,15 @@ export interface KVSubscription {
   remove(): void
 }
 
+function getTtlMs(options?: SetOptions): number | undefined {
+  const ttl = options?.ttlMs
+  if (ttl === undefined) return undefined
+  if (!Number.isSafeInteger(ttl) || ttl <= 0) {
+    throw new TypeError('ttlMs must be a positive safe integer')
+  }
+  return ttl
+}
+
 export class KV {
   private readonly native: SccKvInstance
   private readonly listeners = new Set<KVChangeListener>()
@@ -59,7 +68,7 @@ export class KV {
   }
 
   set(key: string, value: KVValue, options?: SetOptions): void {
-    const ttl = options?.ttlMs
+    const ttl = getTtlMs(options)
     if (ttl !== undefined) {
       if (typeof value === 'string') this.native.setStringTtl(key, value, ttl)
       else if (typeof value === 'number') this.native.setNumberTtl(key, value, ttl)
@@ -74,7 +83,7 @@ export class KV {
   }
 
   setJSON(key: string, value: unknown, options?: SetOptions): void {
-    const ttl = options?.ttlMs
+    const ttl = getTtlMs(options)
     if (ttl !== undefined) {
       this.native.setJsonTtl(key, JSON.stringify(value), ttl)
       return

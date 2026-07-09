@@ -53,8 +53,6 @@ fn sweeper_reclaims_expired_keys_and_notifies() {
     s.subscribe(move |key| sink.lock().unwrap().push(key.map(str::to_string)));
 
     s.set_with_ttl("gone", Value::Bool(true), 50).unwrap();
-    // len() counts raw slots, so it only drops once the sweeper physically
-    // removes the expired entry.
     assert_eq!(s.len(), 1);
     std::thread::sleep(Duration::from_millis(800));
     assert_eq!(s.len(), 0);
@@ -68,6 +66,24 @@ fn sweeper_reclaims_expired_keys_and_notifies() {
             >= 2,
         "expected set + sweep-delete notifications"
     );
+    s.close().unwrap();
+}
+
+#[test]
+fn len_excludes_expired_keys_before_sweeper() {
+    let dir = tempfile::tempdir().unwrap();
+    let opts = OpenOptions {
+        ttl_sweep_interval: Duration::from_secs(3600),
+        ..strict_opts()
+    };
+    let s = Store::open(dir.path(), "live-len", opts).unwrap();
+
+    s.set_with_ttl("gone", Value::Bool(true), 30).unwrap();
+    assert_eq!(s.len(), 1);
+    std::thread::sleep(Duration::from_millis(80));
+    assert_eq!(s.get("gone"), None);
+    assert_eq!(s.len(), 0);
+    assert!(s.is_empty());
     s.close().unwrap();
 }
 

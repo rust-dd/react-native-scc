@@ -28,10 +28,12 @@ export function resetStores() {
 }
 
 function mockMakeInstance(store: FakeStore) {
+  const isExpired = (entry: { expiresAt?: number }) =>
+    entry.expiresAt !== undefined && Date.now() >= entry.expiresAt
   const get = (key: string, tag: number) => {
     const entry = store.map.get(key)
     if (entry === undefined || entry.tag !== tag) return undefined
-    if (entry.expiresAt !== undefined && Date.now() >= entry.expiresAt) return undefined
+    if (isExpired(entry)) return undefined
     return entry.value
   }
   const set = (key: string, tag: number, value: unknown, ttlMs?: number) => {
@@ -53,19 +55,26 @@ function mockMakeInstance(store: FakeStore) {
     getBoolean: (k: string) => get(k, 2),
     getBuffer: (k: string) => get(k, 3),
     getJson: (k: string) => get(k, 4),
-    contains: (k: string) => store.map.has(k),
+    contains: (k: string) => {
+      const entry = store.map.get(k)
+      return entry !== undefined && !isExpired(entry)
+    },
     remove: (k: string) => {
       const existed = store.map.delete(k)
       if (existed) store.notify(k)
       return existed
     },
-    getAllKeys: () => [...store.map.keys()],
+    getAllKeys: () =>
+      [...store.map.entries()]
+        .filter(([, entry]) => !isExpired(entry))
+        .map(([key]) => key),
     clearAll: () => {
       store.map.clear()
       store.notify(undefined)
     },
     flush: () => {},
-    size: () => store.map.size,
+    size: () =>
+      [...store.map.values()].filter((entry) => !isExpired(entry)).length,
     close: () => {},
     addListener: (listener: Listener) => {
       const id = store.nextListenerId++

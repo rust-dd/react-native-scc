@@ -35,7 +35,7 @@ function buildRustIfMissing(libPath, buildScriptName, platform) {
   } catch {
     console.warn(
       `[react-native-scc-storage] ${platform} Rust build failed. ` +
-        `Run manually: cd node_modules/react-native-scc && npm run rust:build:${platform.toLowerCase()}`
+        `Run manually: cd node_modules/react-native-scc-storage && npm run rust:build:${platform.toLowerCase()}`
     )
   }
 }

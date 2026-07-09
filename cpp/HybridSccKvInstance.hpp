@@ -7,6 +7,7 @@
 #include <NitroModules/Null.hpp>
 #include <NitroModules/Promise.hpp>
 
+#include <cmath>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -381,7 +382,11 @@ private:
 
   void setRawTtl(const std::string& key, uint8_t tag, const uint8_t* data, size_t len,
                  double ttlMs) {
-    if (ttlMs <= 0) throw std::runtime_error("ttlMs must be positive");
+    constexpr double maxSafeInteger = 9007199254740991.0;
+    if (!std::isfinite(ttlMs) || ttlMs <= 0 || ttlMs > maxSafeInteger ||
+        std::floor(ttlMs) != ttlMs) {
+      throw std::runtime_error("ttlMs must be a positive safe integer");
+    }
     if (scc_kv_set_ttl(_handle, kptr(key), key.size(), tag, data, len,
                        static_cast<uint64_t>(ttlMs)) != 0) {
       throwLastError("setTtl");

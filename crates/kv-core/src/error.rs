@@ -15,12 +15,19 @@ pub enum Error {
         offset: u64,
         path: PathBuf,
     },
+    #[error("record payload too large: {payload_len} bytes (max {max_payload})")]
+    RecordTooLarge {
+        payload_len: usize,
+        max_payload: u32,
+    },
     #[error("store is closed")]
     Closed,
     #[error("background writer failed: {0}")]
     Background(String),
     #[error("encryption error: {0}")]
     Crypto(String),
+    #[error("configuration error: {0}")]
+    Config(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

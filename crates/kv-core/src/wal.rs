@@ -13,7 +13,7 @@ use crate::notify::Listeners;
 use crate::record::{self, Op};
 use crate::snapshot;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Durability {
     Relaxed,
     Strict,

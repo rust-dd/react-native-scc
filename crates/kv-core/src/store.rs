@@ -11,7 +11,7 @@ use crate::snapshot;
 use crate::value::Value;
 use crate::wal::{Durability, WalHandle, WriterConfig};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenOptions {
     pub durability: Durability,
     pub recreate: bool,
@@ -120,6 +120,8 @@ impl Store {
 
     pub fn set(&self, key: &str, value: Value) -> Result<()> {
         self.ensure_open()?;
+        let op = Op::Set { key, value: &value };
+        record::validate(&op)?;
         let rec = match &self.wal {
             Some(wal) => {
                 wal.check()?;
@@ -130,7 +132,7 @@ impl Store {
                     Value::Bool(_) => 1,
                 };
                 let mut buf = wal.take_buffer(14 + key.len() + hint);
-                record::encode(&Op::Set { key, value: &value }, &mut buf);
+                record::encode(&op, &mut buf);
                 Some(buf)
             }
             None => None,
@@ -148,18 +150,17 @@ impl Store {
     pub fn set_with_ttl(&self, key: &str, value: Value, ttl_ms: u64) -> Result<()> {
         self.ensure_open()?;
         let expires_at_ms = crate::now_ms().saturating_add(ttl_ms);
+        let op = Op::SetTtl {
+            key,
+            value: &value,
+            expires_at_ms,
+        };
+        record::validate(&op)?;
         let rec = match &self.wal {
             Some(wal) => {
                 wal.check()?;
                 let mut buf = wal.take_buffer(30 + key.len());
-                record::encode(
-                    &Op::SetTtl {
-                        key,
-                        value: &value,
-                        expires_at_ms,
-                    },
-                    &mut buf,
-                );
+                record::encode(&op, &mut buf);
                 Some(buf)
             }
             None => None,
@@ -176,6 +177,10 @@ impl Store {
     /// send), listeners fire per key. Values are applied in iteration order.
     pub fn set_many<'a>(&self, entries: impl Iterator<Item = (&'a str, Value)>) -> Result<()> {
         self.ensure_open()?;
+        let entries: Vec<_> = entries.collect();
+        for (key, value) in &entries {
+            record::validate(&Op::Set { key, value })?;
+        }
         let collect_keys = self.listeners.is_active();
         let mut notify_keys: Vec<compact_str::CompactString> = Vec::new();
         match &self.wal {
@@ -237,6 +242,7 @@ impl Store {
 
     pub fn delete(&self, key: &str) -> Result<bool> {
         self.ensure_open()?;
+        record::validate(&Op::Delete { key })?;
         if let Some(wal) = &self.wal {
             wal.check()?;
         }
@@ -265,11 +271,19 @@ impl Store {
     }
 
     pub fn len(&self) -> usize {
-        self.map.len()
+        let now = crate::now_ms();
+        let mut len = 0;
+        self.map.iter_sync(|_, slot| {
+            if !slot.is_expired(now) {
+                len += 1;
+            }
+            true
+        });
+        len
     }
 
     pub fn is_empty(&self) -> bool {
-        self.map.is_empty()
+        self.len() == 0
     }
 
     pub fn clear(&self) -> Result<()> {
@@ -535,5 +549,15 @@ mod tests {
             Err(Error::Background(_))
         ));
         assert_eq!(s.get("k"), Some(Value::Num(1.0)));
+    }
+
+    #[test]
+    fn oversized_record_is_rejected_before_apply() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(dir.path(), "db", fast_opts()).unwrap();
+        let oversized = vec![0u8; record::MAX_PAYLOAD as usize];
+
+        assert!(s.set("huge", Value::Bytes(oversized)).is_err());
+        assert_eq!(s.get("huge"), None);
     }
 }

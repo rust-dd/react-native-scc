@@ -44,9 +44,29 @@ test('ttl option expires values', async () => {
   kv.setJSON('jtmp', { a: 1 }, { ttlMs: 30 })
   expect(kv.getString('tmp')).toBe('v')
   expect(kv.getJSON<{ a: number }>('jtmp')?.a).toBe(1)
+  expect(kv.contains('tmp')).toBe(true)
+  expect(kv.getAllKeys().sort()).toEqual(['jtmp', 'tmp'])
+  expect(kv.size).toBe(2)
   await new Promise((resolve) => setTimeout(resolve, 60))
   expect(kv.getString('tmp')).toBeUndefined()
   expect(kv.getJSON('jtmp')).toBeUndefined()
+  expect(kv.contains('tmp')).toBe(false)
+  expect(kv.getAllKeys()).toEqual([])
+  expect(kv.size).toBe(0)
+})
+
+test('ttl option rejects invalid durations', () => {
+  const kv = createKV({ id: 'bad-ttl' })
+
+  expect(() => kv.set('nan', 'v', { ttlMs: Number.NaN })).toThrow(/ttlMs/)
+  expect(() => kv.setJSON('inf', { a: 1 }, { ttlMs: Infinity })).toThrow(
+    /ttlMs/
+  )
+  expect(() => kv.set('zero', 'v', { ttlMs: 0 })).toThrow(/ttlMs/)
+  expect(() =>
+    kv.set('unsafe', 'v', { ttlMs: Number.MAX_SAFE_INTEGER + 1 })
+  ).toThrow(/ttlMs/)
+  expect(kv.getAllKeys()).toEqual([])
 })
 
 test('listener fires for cross-handle writes and clearAll', async () => {

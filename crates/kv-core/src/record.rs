@@ -42,7 +42,49 @@ pub(crate) enum DecodeOutcome {
     Corrupt,
 }
 
+pub(crate) fn validate(op: &Op) -> crate::Result<()> {
+    let payload_len = encoded_payload_len(op).ok_or(crate::Error::RecordTooLarge {
+        payload_len: usize::MAX,
+        max_payload: MAX_PAYLOAD,
+    })?;
+    if payload_len > MAX_PAYLOAD as usize {
+        return Err(crate::Error::RecordTooLarge {
+            payload_len,
+            max_payload: MAX_PAYLOAD,
+        });
+    }
+    Ok(())
+}
+
+fn encoded_payload_len(op: &Op) -> Option<usize> {
+    match op {
+        Op::Set { key, value } => encoded_set_len(key, value, 0),
+        Op::Delete { key } => 1usize.checked_add(4)?.checked_add(key.len()),
+        Op::Clear => Some(5),
+        Op::SetTtl { key, value, .. } => encoded_set_len(key, value, 8),
+    }
+}
+
+fn encoded_set_len(key: &str, value: &Value, extra: usize) -> Option<usize> {
+    1usize
+        .checked_add(4)?
+        .checked_add(key.len())?
+        .checked_add(extra)?
+        .checked_add(1)?
+        .checked_add(value_len(value))
+}
+
+fn value_len(value: &Value) -> usize {
+    match value {
+        Value::Str(s) | Value::Json(s) => s.len(),
+        Value::Num(_) => 8,
+        Value::Bool(_) => 1,
+        Value::Bytes(b) => b.len(),
+    }
+}
+
 pub(crate) fn encode(op: &Op, out: &mut Vec<u8>) {
+    debug_assert!(validate(op).is_ok());
     let frame_start = out.len();
     out.extend_from_slice(&[0u8; 8]);
     let payload_start = out.len();
