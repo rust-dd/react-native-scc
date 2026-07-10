@@ -1,5 +1,5 @@
 import { useAtom } from 'jotai'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Platform,
   Pressable,
@@ -14,7 +14,7 @@ import {
   SafeAreaProvider,
   SafeAreaView,
 } from 'react-native-safe-area-context'
-import { createKV, useKVNumber } from 'react-native-scc-storage'
+import { createKV, useKVNumber, useKVSelector } from 'react-native-scc-storage'
 import { atomWithKV } from 'react-native-scc-storage/jotai'
 import { sccStateStorage } from 'react-native-scc-storage/zustand'
 import { create } from 'zustand'
@@ -116,6 +116,74 @@ async function runSelfTest(): Promise<Result[]> {
     `launch #${vaultLaunches}`
   )
   vault.flush()
+
+  kv.set('tx_drop', 'x')
+  const txResult = kv.transaction((tx) => {
+    const next = (tx.getNumber('tx_counter') ?? 0) + 1
+    tx.set('tx_counter', next)
+    tx.setJSON('tx_meta', { next })
+    tx.delete('tx_drop')
+    return next
+  })
+  check(
+    'transaction: atomic batch commit',
+    kv.getNumber('tx_counter') === txResult &&
+      kv.getJSON<{ next: number }>('tx_meta')?.next === txResult &&
+      !kv.contains('tx_drop'),
+    `commit #${txResult}`
+  )
+
+  const profile = kv.namespace('profile')
+  profile.clearAll()
+  profile.set('name', 'Ada')
+  profile.setJSON('prefs', { theme: 'dark' })
+  check(
+    'namespace: scoped keys',
+    profile.getString('name') === 'Ada' &&
+      profile.size === 2 &&
+      kv.getString('profile:name') === 'Ada' &&
+      profile.getAllKeys().sort().join(',') === 'name,prefs'
+  )
+  check(
+    'namespace: scoped clearAll',
+    profile.clearAll() === 2 && !kv.contains('profile:name')
+  )
+
+  kv.setJSON('obs_settings', { theme: 'dark', volume: 1 })
+  const observed = new Promise<string | undefined>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('observe timeout')), 2000)
+    const sub = kv.observeJSON<{ theme: string }, string | undefined>(
+      'obs_settings',
+      (s) => s?.theme,
+      (theme) => {
+        if (theme === 'light') {
+          clearTimeout(timer)
+          sub.remove()
+          resolve(theme)
+        }
+      }
+    )
+    kv.setJSON('obs_settings', { theme: 'light', volume: 1 })
+  })
+  try {
+    check('observeJSON: selected change emits', (await observed) === 'light')
+  } catch (e) {
+    check('observeJSON: selected change emits', false, String(e))
+  }
+
+  const cache = createKV({
+    id: 'evict-demo',
+    persistence: 'none',
+    maxEntries: 8,
+    ttlSweepIntervalMs: 50,
+  })
+  for (let i = 0; i < 32; i++) cache.set(`item_${i}`, i)
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  check(
+    'eviction: in-memory maxEntries cap',
+    cache.size <= 8,
+    `${cache.size}/32 kept`
+  )
 
   kv.flush()
   return results
@@ -292,6 +360,138 @@ function HookDemo({ t }: { t: Palette }) {
   )
 }
 
+function DemoRow({
+  label,
+  hint,
+  value,
+  t,
+  children,
+}: {
+  label: string
+  hint?: string
+  value?: string
+  t: Palette
+  children: React.ReactNode
+}) {
+  return (
+    <View style={styles.demoRow}>
+      <View style={styles.demoTop}>
+        <View style={styles.demoLabelWrap}>
+          <Text
+            style={[styles.counterLabel, { color: t.sub }]}
+            numberOfLines={1}
+          >
+            {label}
+          </Text>
+          {hint !== undefined && (
+            <Text
+              style={[styles.caption, { color: t.faint }]}
+              numberOfLines={1}
+            >
+              {hint}
+            </Text>
+          )}
+        </View>
+        {value !== undefined && (
+          <Text style={[styles.counterValue, { color: t.ink }]} numberOfLines={1}>
+            {value}
+          </Text>
+        )}
+      </View>
+      <View style={styles.demoActions}>{children}</View>
+    </View>
+  )
+}
+
+function TransactionDemo({ t }: { t: Palette }) {
+  const [a] = useKVNumber('bal_a', kv)
+  const [b] = useKVNumber('bal_b', kv)
+  const from = a ?? 100
+  const to = b ?? 0
+  const transfer = () => {
+    kv.transaction((tx) => {
+      const src = tx.getNumber('bal_a') ?? 100
+      const dst = tx.getNumber('bal_b') ?? 0
+      if (src >= 10) {
+        tx.set('bal_a', src - 10)
+        tx.set('bal_b', dst + 10)
+      } else {
+        tx.set('bal_a', 100)
+        tx.set('bal_b', 0)
+      }
+    })
+  }
+  return (
+    <DemoRow
+      label="transaction"
+      hint="two writes, one atomic batch"
+      value={`${from} → ${to}`}
+      t={t}
+    >
+      <PillButton
+        label={from >= 10 ? 'move 10' : 'reset'}
+        onPress={transfer}
+        t={t}
+      />
+    </DemoRow>
+  )
+}
+
+const demoNs = kv.namespace('demo')
+
+function NamespaceDemo({ t }: { t: Palette }) {
+  const [count, setCount] = useKVNumber('ns_counter', demoNs)
+  return (
+    <DemoRow
+      label="namespace('demo')"
+      hint="stored as demo:ns_counter"
+      value={String(count ?? 0)}
+      t={t}
+    >
+      <PillButton label="+1" onPress={() => setCount((count ?? 0) + 1)} t={t} />
+    </DemoRow>
+  )
+}
+
+interface UiPrefs {
+  theme?: string
+  taps?: number
+}
+
+function SelectorDemo({ t }: { t: Palette }) {
+  const theme = useKVSelector<UiPrefs, string>(
+    'ui_prefs',
+    (p) => p?.theme ?? 'dark',
+    kv
+  )
+  const renders = useRef(0)
+  renders.current += 1
+  const patch = (change: Partial<UiPrefs>) => {
+    kv.setJSON('ui_prefs', { ...kv.getJSON<UiPrefs>('ui_prefs'), ...change })
+  }
+  return (
+    <DemoRow
+      label="useKVSelector"
+      hint={`selects .theme · ${renders.current} renders`}
+      value={theme}
+      t={t}
+    >
+      <PillButton
+        label="toggle theme"
+        onPress={() => patch({ theme: theme === 'dark' ? 'light' : 'dark' })}
+        t={t}
+      />
+      <PillButton
+        label="bump other"
+        onPress={() =>
+          patch({ taps: (kv.getJSON<UiPrefs>('ui_prefs')?.taps ?? 0) + 1 })
+        }
+        t={t}
+      />
+    </DemoRow>
+  )
+}
+
 const useBearStore = create(
   persist<{ bears: number; add: () => void }>(
     (set) => ({
@@ -437,6 +637,14 @@ export default function App() {
             <JotaiDemo t={t} />
           </Card>
 
+          <Card title="TRANSACTIONS · NAMESPACES · SELECTORS" t={t}>
+            <TransactionDemo t={t} />
+            <View style={[styles.divider, { backgroundColor: t.border }]} />
+            <NamespaceDemo t={t} />
+            <View style={[styles.divider, { backgroundColor: t.border }]} />
+            <SelectorDemo t={t} />
+          </Card>
+
           <Card
             title="SELF-TEST"
             caption={running ? undefined : `${passed}/${results.length} passed`}
@@ -542,6 +750,15 @@ const styles = StyleSheet.create({
     minWidth: 36,
     textAlign: 'right',
   },
+  demoRow: { gap: 10 },
+  demoTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 12,
+  },
+  demoLabelWrap: { flexShrink: 1, gap: 2 },
+  demoActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   pill: {
     borderRadius: 999,
     paddingHorizontal: 14,
