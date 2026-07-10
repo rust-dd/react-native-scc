@@ -5,9 +5,18 @@ use std::time::Duration;
 use crate::error::{Error, Result};
 use crate::store::{OpenOptions, Store};
 
+#[derive(PartialEq)]
+enum StoredOptions {
+    Disk(OpenOptions),
+    Mem {
+        max_entries: Option<usize>,
+        sweep_interval: Option<Duration>,
+    },
+}
+
 struct RegistryEntry {
     store: Arc<Store>,
-    options: Option<OpenOptions>,
+    options: StoredOptions,
 }
 
 fn registry() -> &'static scc::HashMap<String, RegistryEntry, crate::FastState> {
@@ -50,7 +59,7 @@ pub fn open_or_get(dir: &Path, id: &str, opts: OpenOptions) -> Result<Arc<Store>
         scc::hash_map::Entry::Vacant(v) => {
             v.insert_entry(RegistryEntry {
                 store: store.clone(),
-                options: Some(stored_opts),
+                options: StoredOptions::Disk(stored_opts),
             });
             Ok(store)
         }
@@ -74,24 +83,36 @@ fn check_options(
             "store '{id}' is already open; close it before reopening with recreate"
         )));
     }
-    if existing.options.as_ref() == Some(requested) {
-        Ok(())
-    } else {
-        Err(Error::Config(format!(
+    match &existing.options {
+        StoredOptions::Disk(opts) if opts == requested => Ok(()),
+        _ => Err(Error::Config(format!(
             "store '{id}' is already open with different options"
-        )))
+        ))),
     }
 }
 
-/// Returns the named in-memory store, creating it on first use.
+/// Returns the named in-memory store, creating it on first use. Reopening an
+/// id with different eviction options is an error, mirroring the disk path.
 pub fn in_memory(
     id: &str,
     max_entries: Option<usize>,
     sweep_interval: Option<Duration>,
-) -> Arc<Store> {
+) -> Result<Arc<Store>> {
     let _guard = registry_lock().lock().unwrap();
     let key = format!("mem::{id}");
-    if let Some(existing) = registry().read_sync(&key, |_, entry| entry.store.clone()) {
+    let requested = StoredOptions::Mem {
+        max_entries,
+        sweep_interval,
+    };
+    if let Some(existing) = registry().read_sync(&key, |_, entry| {
+        if entry.options == requested {
+            Ok(entry.store.clone())
+        } else {
+            Err(Error::Config(format!(
+                "store '{id}' is already open with different options"
+            )))
+        }
+    }) {
         return existing;
     }
     let store = if max_entries.is_some() || sweep_interval.is_some() {
@@ -100,13 +121,13 @@ pub fn in_memory(
         Store::in_memory()
     };
     match registry().entry_sync(key) {
-        scc::hash_map::Entry::Occupied(o) => o.get().store.clone(),
+        scc::hash_map::Entry::Occupied(o) => Ok(o.get().store.clone()),
         scc::hash_map::Entry::Vacant(v) => {
             v.insert_entry(RegistryEntry {
                 store: store.clone(),
-                options: None,
+                options: requested,
             });
-            store
+            Ok(store)
         }
     }
 }
@@ -169,8 +190,9 @@ mod tests {
 
     #[test]
     fn in_memory_registry_dedupes() {
-        let a = in_memory("state", None, None);
-        let b = in_memory("state", None, None);
+        let a = in_memory("state", None, None).unwrap();
+        let b = in_memory("state", None, None).unwrap();
+        assert!(in_memory("state", Some(5), None).is_err());
         assert!(Arc::ptr_eq(&a, &b));
         close(None, "state").unwrap();
     }

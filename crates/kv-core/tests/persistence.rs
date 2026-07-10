@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use kv_core::{Durability, OpenOptions, Store, Value};
+use kv_core::{BatchOp, Durability, OpenOptions, Store, Value};
 
 fn fast_opts() -> OpenOptions {
     OpenOptions {
@@ -135,4 +135,42 @@ fn writes_during_compaction_survive() {
     assert_eq!(s.len(), 1000);
     assert_eq!(s.get("r19_i49"), Some(Value::Num(999.0)));
     assert_eq!(s.get("r0_i0"), Some(Value::Num(0.0)));
+}
+
+#[test]
+fn batches_race_compaction_and_reopen_consistent() {
+    let dir = tempfile::tempdir().unwrap();
+    let opts = OpenOptions {
+        compact_min: 512,
+        ..fast_opts()
+    };
+    let payload = "x".repeat(512);
+    {
+        let s = Store::open(dir.path(), "db", opts.clone()).unwrap();
+        // Padded batches keep the writer compacting while the caller holds the
+        // compaction gate's read side — a deadlocked gate hangs this test, and
+        // the reopen below must always see a and b moved together.
+        for i in 0..300 {
+            s.apply_batch(&[
+                BatchOp::Set {
+                    key: "a".into(),
+                    value: Value::Num(i as f64),
+                },
+                BatchOp::Set {
+                    key: format!("pad{i}"),
+                    value: Value::Str(payload.as_str().into()),
+                },
+                BatchOp::Set {
+                    key: "b".into(),
+                    value: Value::Num(i as f64),
+                },
+            ])
+            .unwrap();
+        }
+        s.flush().unwrap();
+        s.close().unwrap();
+    }
+    let s = Store::open(dir.path(), "db", opts).unwrap();
+    assert_eq!(s.get("a"), s.get("b"));
+    assert_eq!(s.get("a"), Some(Value::Num(299.0)));
 }

@@ -1,6 +1,6 @@
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use crate::crypto::Cipher;
@@ -51,9 +51,11 @@ pub struct Store {
     listeners: Arc<Listeners>,
     closed: AtomicBool,
     wal: Option<WalHandle>,
-    /// Held only to stop the in-memory background sweeper when the store drops.
-    #[allow(dead_code)]
     sweeper: Option<crate::sweeper::SweeperHandle>,
+    /// Read side of the compaction gate: multi-op batches hold it across map
+    /// application + WAL append so the writer's compact() (write side) can
+    /// never snapshot a half-applied batch and truncate its record away.
+    compact_gate: Arc<RwLock<()>>,
 }
 
 impl Store {
@@ -64,6 +66,7 @@ impl Store {
             closed: AtomicBool::new(false),
             wal: None,
             sweeper: None,
+            compact_gate: Arc::new(RwLock::new(())),
         })
     }
 
@@ -83,6 +86,7 @@ impl Store {
             closed: AtomicBool::new(false),
             wal: None,
             sweeper: Some(sweeper),
+            compact_gate: Arc::new(RwLock::new(())),
         })
     }
 
@@ -112,6 +116,7 @@ impl Store {
         let cipher = opts.encryption_key.map(|k| Arc::new(Cipher::new(&k)));
         let listeners = Arc::new(Listeners::new());
         let map = Arc::new(crate::new_value_map());
+        let compact_gate = Arc::new(RwLock::new(()));
         let snap_len = snapshot::load(&snap_path, &map, cipher.as_deref())?;
         let wal_len = replay_wal(&wal_path, &map, cipher.as_deref())?;
         let wal = WalHandle::spawn(
@@ -127,6 +132,7 @@ impl Store {
                 listeners: listeners.clone(),
                 sweep_interval: opts.ttl_sweep_interval,
                 max_entries: opts.max_entries,
+                compact_gate: compact_gate.clone(),
             },
             map.clone(),
             wal_len,
@@ -138,6 +144,7 @@ impl Store {
             closed: AtomicBool::new(false),
             wal: Some(wal),
             sweeper: None,
+            compact_gate,
         }))
     }
 
@@ -217,6 +224,7 @@ impl Store {
             Some(wal) => {
                 wal.check()?;
                 let mut buf = wal.take_buffer(256);
+                let _gate = self.compact_gate.read().unwrap();
                 for (key, value) in entries {
                     record::encode(&Op::Set { key, value: &value }, &mut buf);
                     apply_set(&self.map, key, value, 0);
@@ -244,7 +252,10 @@ impl Store {
     }
 
     /// Applies `ops` as one crash-atomic unit: a single WAL record, so replay
-    /// sees all of it or none. Listeners fire per changed key.
+    /// sees all of it or none. Listeners fire per changed key. If the WAL
+    /// append fails, the in-process map may already reflect the batch even
+    /// though it will not survive a restart — the error signals that the
+    /// store's durable state has fallen behind.
     pub fn apply_batch(&self, ops: &[BatchOp]) -> Result<()> {
         self.ensure_open()?;
         if ops.is_empty() {
@@ -264,6 +275,7 @@ impl Store {
             wal.check()?;
             let mut buf = wal.take_buffer(256);
             record::encode(&Op::Batch { ops: &subs }, &mut buf);
+            let _gate = self.compact_gate.read().unwrap();
             self.apply_ops(ops, collect_keys, &mut notify_keys);
             wal.append(buf)?;
         } else {
@@ -282,16 +294,14 @@ impl Store {
         notify: &mut Vec<compact_str::CompactString>,
     ) {
         for op in ops {
-            match op {
-                BatchOp::Set { key, value } => apply_set(&self.map, key, value.clone(), 0),
-                BatchOp::Delete { key } => {
-                    self.map.remove_sync(key);
+            let (key, changed) = match op {
+                BatchOp::Set { key, value } => {
+                    apply_set(&self.map, key, value.clone(), 0);
+                    (key, true)
                 }
-            }
-            if collect {
-                let key = match op {
-                    BatchOp::Set { key, .. } | BatchOp::Delete { key } => key,
-                };
+                BatchOp::Delete { key } => (key, self.map.remove_sync(key).is_some()),
+            };
+            if collect && changed {
                 notify.push(key.as_str().into());
             }
         }
@@ -404,6 +414,9 @@ impl Store {
     pub fn close(&self) -> Result<()> {
         if self.closed.swap(true, Ordering::AcqRel) {
             return Ok(());
+        }
+        if let Some(sweeper) = &self.sweeper {
+            sweeper.stop();
         }
         if let Some(wal) = &self.wal {
             wal.shutdown();

@@ -1,7 +1,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -31,6 +31,7 @@ pub(crate) struct WriterConfig {
     pub listeners: Arc<Listeners>,
     pub sweep_interval: Duration,
     pub max_entries: Option<usize>,
+    pub compact_gate: Arc<RwLock<()>>,
 }
 
 enum Msg {
@@ -251,16 +252,31 @@ impl Writer {
     /// like any other mutation.
     fn sweep_and_evict(&mut self) {
         let now = crate::now_ms();
-        let doomed = crate::compute_doomed(&self.map, now, self.cfg.max_entries);
-        for key in doomed {
-            if self.map.remove_sync(&key).is_some() {
-                if self.first_pending.is_none() {
-                    self.first_pending = Some(Instant::now());
-                }
-                record::encode(&Op::Delete { key: &key }, &mut self.pending);
-                self.cfg.listeners.notify(Some(&key));
+        let (expired, evicted) = crate::compute_doomed(&self.map, now, self.cfg.max_entries);
+        for key in expired {
+            // Re-check under the entry lock: the key may have been rewritten
+            // with a live value since the scan judged it expired.
+            if self
+                .map
+                .remove_if_sync(&key, |slot| slot.is_expired(now))
+                .is_some()
+            {
+                self.record_sweep_removal(&key);
             }
         }
+        for key in evicted {
+            if self.map.remove_sync(&key).is_some() {
+                self.record_sweep_removal(&key);
+            }
+        }
+    }
+
+    fn record_sweep_removal(&mut self, key: &str) {
+        if self.first_pending.is_none() {
+            self.first_pending = Some(Instant::now());
+        }
+        record::encode(&Op::Delete { key }, &mut self.pending);
+        self.cfg.listeners.notify(Some(key));
     }
 
     fn write_batch(&mut self) {
@@ -311,6 +327,11 @@ impl Writer {
     }
 
     fn compact(&mut self) {
+        // Write side of the compaction gate: batch writers hold the read side
+        // across map application + append, so the snapshot below can never
+        // capture a half-applied batch whose record the truncation discards.
+        let gate = Arc::clone(&self.cfg.compact_gate);
+        let _gate = gate.write().unwrap();
         match snapshot::write_atomic(&self.cfg.snap_path, &self.map, self.cfg.cipher.as_deref()) {
             Ok(n) => {
                 self.snap_len = n;
@@ -362,6 +383,7 @@ mod tests {
             listeners: Arc::new(Listeners::new()),
             sweep_interval: Duration::from_secs(3600),
             max_entries: None,
+            compact_gate: Arc::new(RwLock::new(())),
         }
     }
 

@@ -91,6 +91,8 @@ function mockMakeInstance(store: FakeStore) {
       keys.forEach((k, i) => set(k, 0, values[i]))
     },
     getManyString: (keys: string[]) => keys.map((k) => get(k, 0) ?? null),
+    // Mirrors the native decoder's strictness so an encoder regression fails
+    // in Jest instead of only throwing from native on device.
     applyBatch: (packed: ArrayBuffer) => {
       const view = new DataView(packed)
       const raw = new Uint8Array(packed)
@@ -109,6 +111,7 @@ function mockMakeInstance(store: FakeStore) {
           if (store.map.delete(key)) store.notify(key)
           continue
         }
+        if (kind !== 1) throw new Error(`applyBatch: unknown op kind ${kind}`)
         const tag = raw[off]!
         off += 1
         const valLen = view.getUint32(off, true)
@@ -117,16 +120,24 @@ function mockMakeInstance(store: FakeStore) {
         off += valLen
         let value: unknown
         if (tag === 0 || tag === 4) value = dec.decode(valBytes)
-        else if (tag === 1)
+        else if (tag === 1) {
+          if (valBytes.byteLength !== 8)
+            throw new Error('applyBatch: invalid number encoding')
           value = new DataView(
             valBytes.buffer,
             valBytes.byteOffset,
             valBytes.byteLength
           ).getFloat64(0, true)
-        else if (tag === 2) value = valBytes[0] === 1
-        else value = valBytes.slice().buffer
+        } else if (tag === 2) {
+          if (valBytes.byteLength !== 1 || valBytes[0]! > 1)
+            throw new Error('applyBatch: invalid bool encoding')
+          value = valBytes[0] === 1
+        } else if (tag === 3) value = valBytes.slice().buffer
+        else throw new Error(`applyBatch: unknown value tag ${tag}`)
         set(key, tag, value)
       }
+      if (off !== raw.byteLength)
+        throw new Error('applyBatch: trailing bytes in batch buffer')
     },
   }
   const withAsync: Record<string, unknown> = { ...instance }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useInsertionEffect, useRef, useState } from 'react'
 import { getDefaultKV, KV } from './kv'
 
 type Reader<T> = (kv: KV, key: string) => T | undefined
@@ -86,15 +86,16 @@ export function useKVSelector<T = unknown, S = T | undefined>(
   const store = kv ?? getDefaultKV()
   const [value, setValue] = useState<S>(() => selector(store.getJSON<T>(key)))
 
-  // Keep the latest selector/equals in refs so the subscription depends only on
-  // [store, key]. An inline selector gets a fresh identity every render; putting
-  // it in the effect deps would tear down and re-create the native listener on
-  // every render, and for an object-returning selector it would loop forever
-  // through observeJSON's immediate emit.
+  // Refs (not effect deps) so an inline selector's fresh identity each render
+  // doesn't resubscribe the native listener — or, for object selectors, loop
+  // via observeJSON's immediate emit. Written in useInsertionEffect so an
+  // abandoned concurrent render can't leave a stale closure in the ref.
   const selectorRef = useRef(selector)
   const equalsRef = useRef(equals)
-  selectorRef.current = selector
-  equalsRef.current = equals
+  useInsertionEffect(() => {
+    selectorRef.current = selector
+    equalsRef.current = equals
+  })
 
   useEffect(() => {
     const subscription = store.observeJSON<T, S>(

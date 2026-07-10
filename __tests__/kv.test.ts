@@ -91,6 +91,61 @@ test('namespaced transaction scopes committed keys', () => {
   expect(kv.getString('u:1:name')).toBe('Ada')
 })
 
+test('transaction commits through a single native batch call', () => {
+  const kv = createKV({ id: 'txsingle' })
+  const native = (
+    kv as unknown as { native: { applyBatch(packed: ArrayBuffer): void } }
+  ).native
+  const spy = jest.spyOn(native, 'applyBatch')
+
+  kv.transaction((tx) => {
+    tx.set('x', 1)
+    tx.setJSON('y', { a: 1 })
+    tx.delete('z')
+  })
+
+  expect(spy).toHaveBeenCalledTimes(1)
+  spy.mockRestore()
+})
+
+test('rejected async transaction discards staged writes', () => {
+  const kv = createKV({ id: 'txdiscard' })
+
+  expect(() =>
+    kv.transaction((tx) => {
+      tx.set('staged', 'v')
+      return Promise.resolve(undefined) as never
+    })
+  ).toThrow(/synchronous/)
+
+  expect(kv.contains('staged')).toBe(false)
+})
+
+test('transaction getJSON returns a snapshot copy', () => {
+  const kv = createKV({ id: 'txsnap' })
+
+  kv.transaction((tx) => {
+    tx.setJSON('doc', { items: [1] })
+    const doc = tx.getJSON<{ items: number[] }>('doc')!
+    doc.items.push(2)
+    expect(tx.getJSON<{ items: number[] }>('doc')!.items).toEqual([1])
+  })
+
+  expect(kv.getJSON<{ items: number[] }>('doc')!.items).toEqual([1])
+})
+
+test('transaction copies staged buffers', () => {
+  const kv = createKV({ id: 'txbuf' })
+  const buf = new Uint8Array([1, 2, 3]).buffer
+
+  kv.transaction((tx) => {
+    tx.set('b', buf)
+    new Uint8Array(buf)[0] = 99
+  })
+
+  expect(new Uint8Array(kv.getBuffer('b')!)[0]).toBe(1)
+})
+
 test('createKV validates eviction options for in-memory stores', () => {
   expect(() =>
     createKV({ id: 'evbad', persistence: 'none', maxEntries: -1 })

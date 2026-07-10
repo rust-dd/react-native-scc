@@ -60,6 +60,31 @@ const TAG_BOOL = 2
 const TAG_BYTES = 3
 const TAG_JSON = 4
 
+const textEncoder =
+  typeof TextEncoder === 'undefined' ? undefined : new TextEncoder()
+
+/** UTF-8 encode with a manual fallback: JSC and Hermes < RN 0.74 lack TextEncoder. */
+function utf8Encode(value: string): Uint8Array {
+  if (textEncoder !== undefined) return textEncoder.encode(value)
+  const out: number[] = []
+  for (let i = 0; i < value.length; i++) {
+    const cp = value.codePointAt(i)!
+    if (cp > 0xffff) i++
+    if (cp < 0x80) out.push(cp)
+    else if (cp < 0x800) out.push(0xc0 | (cp >> 6), 0x80 | (cp & 0x3f))
+    else if (cp < 0x10000)
+      out.push(0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f))
+    else
+      out.push(
+        0xf0 | (cp >> 18),
+        0x80 | ((cp >> 12) & 0x3f),
+        0x80 | ((cp >> 6) & 0x3f),
+        0x80 | (cp & 0x3f)
+      )
+  }
+  return new Uint8Array(out)
+}
+
 interface EncodedOp {
   del: boolean
   key: string
@@ -69,7 +94,7 @@ interface EncodedOp {
 
 function encodeValue(value: KVValue): { tag: number; bytes: Uint8Array } {
   if (typeof value === 'string') {
-    return { tag: TAG_STR, bytes: new TextEncoder().encode(value) }
+    return { tag: TAG_STR, bytes: utf8Encode(value) }
   }
   if (typeof value === 'number') {
     const bytes = new Uint8Array(8)
@@ -88,8 +113,7 @@ function encodeValue(value: KVValue): { tag: number; bytes: Uint8Array } {
  * for a set (`kind === 1`), `[u8 tag][u32 valLen][val]`. All little-endian.
  */
 function encodeBatch(ops: EncodedOp[]): ArrayBuffer {
-  const enc = new TextEncoder()
-  const parts = ops.map((op) => ({ ...op, keyBytes: enc.encode(op.key) }))
+  const parts = ops.map((op) => ({ ...op, keyBytes: utf8Encode(op.key) }))
   let size = 4
   for (const p of parts) {
     size += 1 + 4 + p.keyBytes.length
@@ -122,7 +146,7 @@ function encodeBatch(ops: EncodedOp[]): ArrayBuffer {
 type PendingWrite =
   | { kind: 'delete' }
   | { kind: 'value'; value: KVValue }
-  | { kind: 'json'; value: unknown; json: string }
+  | { kind: 'json'; json: string }
 
 export interface KVTransaction {
   set(key: string, value: KVValue): void
@@ -142,11 +166,16 @@ class TransactionContext implements KVTransaction {
   constructor(private readonly store: KV) {}
 
   set(key: string, value: KVValue): void {
-    this.writes.set(key, { kind: 'value', value })
+    // Copy staged buffers: kv.set marshals at call time, so later caller-side
+    // mutation must not leak into the commit here either.
+    this.writes.set(key, {
+      kind: 'value',
+      value: value instanceof ArrayBuffer ? value.slice(0) : value,
+    })
   }
 
   setJSON(key: string, value: unknown): void {
-    this.writes.set(key, { kind: 'json', value, json: JSON.stringify(value) })
+    this.writes.set(key, { kind: 'json', json: JSON.stringify(value) })
   }
 
   getString(key: string): string | undefined {
@@ -183,7 +212,7 @@ class TransactionContext implements KVTransaction {
     const write = this.writes.get(key)
     if (write !== undefined) {
       return write.kind === 'value' && write.value instanceof ArrayBuffer
-        ? write.value
+        ? write.value.slice(0)
         : undefined
     }
     return this.store.getBuffer(key)
@@ -192,7 +221,9 @@ class TransactionContext implements KVTransaction {
   getJSON<T = unknown>(key: string): T | undefined {
     const write = this.writes.get(key)
     if (write !== undefined) {
-      return write.kind === 'json' ? (write.value as T) : undefined
+      // Parse the staged snapshot so reads match what commit will write and
+      // mutating the returned object cannot desync them (KV.getJSON parity).
+      return write.kind === 'json' ? (JSON.parse(write.json) as T) : undefined
     }
     return this.store.getJSON<T>(key)
   }
@@ -254,6 +285,8 @@ export class KV {
    * Stages reads and writes through `tx`, then commits every staged write as a
    * single atomic native batch (one WAL record — all of it survives a crash, or
    * none of it). The callback must be synchronous; reads see prior staged writes.
+   * If the native commit throws (e.g. a background I/O error), no listener
+   * fires and the in-process view may be ahead of what survives a restart.
    */
   transaction<T>(callback: (tx: KVTransaction) => T): T {
     const tx = new TransactionContext(this)
@@ -271,7 +304,7 @@ export class KV {
             del: false,
             key: fullKey,
             tag: TAG_JSON,
-            bytes: new TextEncoder().encode(write.json),
+            bytes: utf8Encode(write.json),
           }
         }
         const { tag, bytes } = encodeValue(write.value)

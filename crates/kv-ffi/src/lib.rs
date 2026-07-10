@@ -153,7 +153,7 @@ pub unsafe extern "C" fn scc_kv_in_memory(
         let max = (max_entries > 0).then_some(max_entries);
         let sweep =
             (ttl_sweep_interval_ms > 0).then(|| Duration::from_millis(ttl_sweep_interval_ms));
-        let store = kv_core::in_memory(id, max, sweep);
+        let store = kv_core::in_memory(id, max, sweep).map_err(|e| e.to_string())?;
         Ok(SccKvStore {
             store,
             dir: None,
