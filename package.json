@@ -1,6 +1,6 @@
 {
   "name": "react-native-scc-storage",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Ultra-low-latency persistent key-value storage for React Native, built on scc (Rust) and Nitro Modules",
   "main": "lib/index",
   "module": "lib/index",

@@ -11,7 +11,7 @@ Pod::Spec.new do |s|
   s.authors      = package["author"]
 
   s.platforms    = { :ios => min_ios_version_supported, :visionos => 1.0 }
-  s.source       = { :git => package["repository"]["url"], :tag => "#{s.version}" }
+  s.source       = { :git => package["repository"]["url"], :tag => "v#{s.version}" }
 
   s.source_files = [
     "ios/**/*.{swift}",
