@@ -14,7 +14,7 @@ The design goal is simple: **every read is a RAM lookup, every write is durable,
 - **Durable by default** — write-ahead log with group commits, atomic snapshot compaction, CRC-protected recovery
 - **Sync and async APIs** — sync for the hot path, `*Async` variants on Nitro's thread pool for anything that must not block the JS thread
 - **Batch operations** — `setMany`/`getMany` cross the bridge once for a whole record set
-- **Transactions + namespaces** — atomic sync transactions, prefix helpers, and scoped KV views
+- **Transactions + namespaces** — crash-atomic sync commits, prefix helpers, and scoped KV views
 - **Encryption at rest** — opt-in ChaCha20-Poly1305 per instance, snapshot and WAL both encrypted
 - **TTL + eviction** — per-key expiry with a background sweeper, optional `maxEntries` cap
 - **Native change events** — listeners, selectors, and hooks react to writes made through any handle of the same store
@@ -26,21 +26,21 @@ The design goal is simple: **every read is a RAM lookup, every write is durable,
 
 ## Benchmarks
 
-JS-visible synchronous API latency vs [react-native-mmkv](https://github.com/mrousavy/react-native-mmkv) 4.3.2, measured by the example app in an iOS 26.3.1 simulator Release build. Each result is the median of four balanced AB/BA trials with a physically recreated SCC store, cleared MMKV store, and verified 103-key seed per trial. Scalar cases run 100k iterations; 100-key cases run 1k iterations and report per-key latency. SCC uses its default relaxed WAL and drains immediately after every SCC sample, outside the timed interval, so its background writer cannot overlap the following MMKV sample.
+JS-visible synchronous API latency vs [react-native-mmkv](https://github.com/mrousavy/react-native-mmkv) 4.3.2, measured by the example app in an iOS 26.3.1 simulator Release build. The table shows the range of per-launch medians from two independent launches. Each launch runs four balanced AB/BA trials with a physically recreated SCC store, cleared MMKV store, and verified 103-key seed per trial. Scalar cases run 100k iterations; 100-key cases run 1k iterations and report per-key latency. SCC uses its default relaxed WAL and performs two sequential, untimed flush barriers after every SCC sample; the second waits behind post-flush writer maintenance, so compaction cannot overlap the following MMKV sample.
 
 | Case (lower is better) | SCC | MMKV |
 | --- | ---: | ---: |
-| `setMany`, 100 × 16 B, per key | 210 ns | 316 ns |
-| `getMany`, 100 × 16 B, per key | 105 ns | 166 ns |
-| Set string, 64 B | 354 ns | 525 ns |
-| Get string, 64 B | 168 ns | 179 ns |
-| Set string, 16 B | 286 ns | 299 ns |
-| Get string, 16 B | 151 ns | 166 ns |
-| Set number | 226 ns | 226 ns |
-| Get number | 110 ns | 130 ns |
-| Get missing key | 109 ns | 125 ns |
+| `setMany`, 100 × 16 B, per key | 209–213 ns | 308 ns |
+| `getMany`, 100 × 16 B, per key | 104–118 ns | 167–188 ns |
+| Set string, 64 B | 358–438 ns | 530–581 ns |
+| Get string, 64 B | 164–184 ns | 176–202 ns |
+| Set string, 16 B | 292–365 ns | 291–316 ns |
+| Get string, 16 B | 146–160 ns | 166–177 ns |
+| Set number | 221–270 ns | 225–232 ns |
+| Get number | 111 ns | 129–132 ns |
+| Get missing key | 111–113 ns | 126–133 ns |
 
-These are one simulator run, not a universal device claim. The write cases measure API-return latency, not `fsync`; call `flush()` when you need an explicit durability barrier. The `setMany` row compares one atomic SCC batch call with 100 independent MMKV scalar calls, so their crash-atomicity semantics differ. Run the benchmark yourself with the in-app **Run benchmark** button; the app persists all raw samples and methodology metadata. For automated Release runs, set `EXPO_PUBLIC_SCC_AUTORUN_BENCHMARK=1` before building.
+These simulator launches are not a universal device claim. The write cases measure API-return latency, not `fsync`; call `flush()` when you need an explicit durability barrier. The `setMany` row compares one SCC bridge call with 100 independent MMKV scalar calls; it is a throughput comparison, not a transaction or crash-atomicity claim. Run the benchmark yourself with the in-app **Run benchmark** button; the app persists all raw samples and methodology metadata. For automated Release runs, set `EXPO_PUBLIC_SCC_AUTORUN_BENCHMARK=1` before building.
 
 ## Install
 
@@ -152,7 +152,7 @@ const next = kv.transaction((tx) => {
 })
 ```
 
-Transactions are synchronous and atomic: the callback stages writes in JS and sees its own staged values, then commits them as a single native batch — one WAL record, so a crash leaves either all of the writes or none of them. Async callbacks are rejected so the library never holds transactional state across an `await`.
+Transactions are synchronous and crash-atomic for recovery: the callback stages writes in JS and sees its own staged values, then commits them as one WAL record, so replay after a crash applies either all staged writes or none. Concurrent readers do not get multi-key isolation while the in-memory commit is being applied. Async callbacks are rejected so the library never holds transactional state across an `await`.
 
 ### Prefixes and namespaces
 
@@ -304,7 +304,7 @@ The Rust core is an independent crate (`crates/kv-core`) with its own test suite
 ```sh
 npm install
 npm run specs            # tsc + nitrogen codegen
-npm test                 # jest (adapters + KV against a mock native layer)
+npm test                 # jest (KV + hooks + adapters against a mock native layer)
 cargo test --workspace   # Rust core + FFI suites
 cargo bench -p kv-core   # criterion benchmarks
 npm run rust:build       # cross-compile static libs for iOS + Android

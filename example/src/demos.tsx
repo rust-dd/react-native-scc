@@ -44,7 +44,7 @@ function TransactionDemo({ t }: { t: Palette }) {
 
   return (
     <DemoRow
-      hint="two writes, one atomic batch"
+      hint="two writes, one crash-atomic WAL record"
       label="transaction"
       t={t}
       value={`${from} → ${to}`}

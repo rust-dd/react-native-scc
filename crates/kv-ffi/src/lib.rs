@@ -341,7 +341,7 @@ pub unsafe extern "C" fn scc_kv_get_raw(
                 Value::Num(_) | Value::Bool(_) => return 0,
             };
             unsafe { *out_len = bytes.len() };
-            if bytes.len() <= cap {
+            if !bytes.is_empty() && bytes.len() <= cap {
                 unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, bytes.len()) };
             }
             1
@@ -424,7 +424,8 @@ pub unsafe extern "C" fn scc_kv_set_ttl(
     })
 }
 
-/// Fast-path string set: no tag round trip, no UTF-8 scan. 0 ok, -1 error.
+/// Fast-path string set: skips generic tag decoding and validates UTF-8. 0 ok,
+/// -1 error.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn scc_kv_set_str(
     h: *mut SccKvStore,

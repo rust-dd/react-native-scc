@@ -147,7 +147,8 @@ int32_t scc_kv_set_ttl(struct SccKvStore *h,
                        uint64_t ttl_ms);
 
 /**
- * Fast-path string set: no tag round trip, no UTF-8 scan. 0 ok, -1 error.
+ * Fast-path string set: skips generic tag decoding and validates UTF-8. 0 ok,
+ * -1 error.
  */
 int32_t scc_kv_set_str(struct SccKvStore *h,
                        const uint8_t *key,

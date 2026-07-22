@@ -307,11 +307,12 @@ export class KV {
   }
 
   /**
-   * Stages reads and writes through `tx`, then commits every staged write as a
-   * single atomic native batch (one WAL record — all of it survives a crash, or
-   * none of it). The callback must be synchronous; reads see prior staged writes.
-   * If the native commit throws (e.g. a background I/O error), no listener
-   * fires and the in-process view may be ahead of what survives a restart.
+   * Stages reads and writes through `tx`, then commits every staged write as one
+   * crash-atomic native batch (one WAL record — all of it survives a crash, or
+   * none of it). The callback must be synchronous and sees prior staged writes.
+   * Concurrent readers can observe individual in-memory key updates while the
+   * commit is applied. If the native commit throws (e.g. a background I/O error),
+   * no listener fires and the in-process view may be ahead of a restart.
    */
   transaction<T>(callback: (tx: KVTransaction) => T): T {
     const tx = new TransactionContext(this)
@@ -350,7 +351,7 @@ export class KV {
     return this.native.getAllKeys().filter((key) => key.startsWith(fullPrefix))
   }
 
-  /** Deletes the keys in the matching snapshot as one native atomic batch. */
+  /** Deletes the matching snapshot as one native crash-atomic WAL batch. */
   deleteByPrefix(prefix: string): number {
     const keys = this.getKeysByPrefix(prefix)
     if (keys.length === 0) return 0

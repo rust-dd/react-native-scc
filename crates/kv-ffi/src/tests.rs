@@ -228,6 +228,12 @@ fn empty_string_value_round_trips() {
     let h = unsafe { scc_kv_in_memory(id.as_ptr(), 0, 0) };
     assert_eq!(set(h, "empty", 0, &[]), 0);
     assert_eq!(get_owned(h, "empty"), Some((0, Vec::new())));
+    let mut len = usize::MAX;
+    assert_eq!(
+        unsafe { scc_kv_get_raw(h, "empty".as_ptr(), 5, 0, std::ptr::null_mut(), 0, &mut len,) },
+        1
+    );
+    assert_eq!(len, 0);
     assert_eq!(unsafe { scc_kv_close(h) }, 0);
     unsafe { scc_kv_release(h) };
 }

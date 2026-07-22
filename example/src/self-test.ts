@@ -172,7 +172,7 @@ export async function runSelfTest(
     return next
   })
   check(
-    'transaction: atomic batch commit',
+    'transaction: staged batch commit',
     kv.getNumber('tx_counter') === transactionResult &&
       kv.getJSON<{ next: number }>('tx_meta')?.next === transactionResult &&
       !kv.contains('tx_drop'),

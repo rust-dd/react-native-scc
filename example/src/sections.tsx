@@ -25,7 +25,7 @@ function BenchmarkRow({ result, t }: { result: BenchmarkCase; t: Palette }) {
   const chipBackground = isTie ? t.track : sccIsFaster ? t.goodSoft : t.badSoft
   const verdict = isTie
     ? '≈ tie'
-    : `${ratio.toFixed(1)}× SCC ${sccIsFaster ? 'faster' : 'slower'}`
+    : `${ratio.toFixed(ratio < 2 ? 2 : 1)}× SCC ${sccIsFaster ? 'faster' : 'slower'}`
 
   return (
     <View

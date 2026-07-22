@@ -31,7 +31,7 @@ export interface BenchmarkCase {
 }
 
 export interface BenchmarkMetadata {
-  methodologyVersion: 4
+  methodologyVersion: 5
   createdAt: string
   platform: string
   platformVersion: string
@@ -43,7 +43,7 @@ export interface BenchmarkMetadata {
   unit: 'nanoseconds-per-operation'
   measurement: 'synchronous-api-call-latency'
   sccDurability: 'relaxed-wal'
-  drainPolicy: 'untimed-after-each-scc-sample'
+  drainPolicy: 'double-flush-idle-barrier-after-each-scc-sample'
   storeReset: 'physical-scc-recreate-per-trial'
 }
 
@@ -248,7 +248,7 @@ export function getLastBenchmark(): BenchmarkReport | undefined {
     stored.metadata === null ||
     typeof stored.metadata !== 'object' ||
     !('methodologyVersion' in stored.metadata) ||
-    stored.metadata.methodologyVersion !== 4 ||
+    stored.metadata.methodologyVersion !== 5 ||
     !Array.isArray(stored.results)
   ) {
     return undefined
@@ -297,6 +297,7 @@ async function collectBenchmark(
           operations
         )
         stores.scc.flush()
+        stores.scc.flush()
         return elapsed
       }
       const measureMmkv = () =>
@@ -340,7 +341,7 @@ async function collectBenchmark(
 
   const report: BenchmarkReport = {
     metadata: {
-      methodologyVersion: 4,
+      methodologyVersion: 5,
       createdAt: new Date().toISOString(),
       platform: Platform.OS,
       platformVersion: String(Platform.Version),
@@ -352,7 +353,7 @@ async function collectBenchmark(
       unit: 'nanoseconds-per-operation',
       measurement: 'synchronous-api-call-latency',
       sccDurability: 'relaxed-wal',
-      drainPolicy: 'untimed-after-each-scc-sample',
+      drainPolicy: 'double-flush-idle-barrier-after-each-scc-sample',
       storeReset: 'physical-scc-recreate-per-trial',
     },
     results,

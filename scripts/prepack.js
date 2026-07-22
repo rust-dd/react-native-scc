@@ -13,11 +13,7 @@ console.log('[prepack] Building iOS Rust libraries...')
 run('bash scripts/build-ios.sh')
 
 console.log('[prepack] Building Android Rust libraries...')
-try {
-  run('bash scripts/build-android.sh')
-} catch {
-  console.warn('[prepack] Android build failed (NDK missing?). Skipping.')
-}
+run('bash scripts/build-android.sh')
 
 console.log('[prepack] Building TypeScript...')
 run('npx tsc')
