@@ -26,14 +26,21 @@ The design goal is simple: **every read is a RAM lookup, every write is durable,
 
 ## Benchmarks
 
-JS-visible latency vs [react-native-mmkv](https://github.com/mrousavy/react-native-mmkv) v4, measured in the example app: iOS simulator, Release configuration, 100k iterations per case, listener-free instances on both sides, ~100 keys already resident in each store, median of three runs. Run it yourself with the in-app "Run benchmark again" button.
+JS-visible synchronous API latency vs [react-native-mmkv](https://github.com/mrousavy/react-native-mmkv) 4.3.2, measured by the example app in an iOS 26.3.1 simulator Release build. Each result is the median of four balanced AB/BA trials with a physically recreated SCC store, cleared MMKV store, and verified 103-key seed per trial. Scalar cases run 100k iterations; 100-key cases run 1k iterations and report per-key latency. SCC uses its default relaxed WAL and drains immediately after every SCC sample, outside the timed interval, so its background writer cannot overlap the following MMKV sample.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/gh/rust-dd/react-native-scc@main/assets/benchmark-dark.svg">
-  <img alt="Benchmark chart: react-native-scc vs react-native-mmkv per-operation latency in nanoseconds (lower is better). scc is faster in all eight cases." src="https://cdn.jsdelivr.net/gh/rust-dd/react-native-scc@main/assets/benchmark-light.svg">
-</picture>
+| Case (lower is better) | SCC | MMKV |
+| --- | ---: | ---: |
+| `setMany`, 100 × 16 B, per key | 210 ns | 316 ns |
+| `getMany`, 100 × 16 B, per key | 105 ns | 166 ns |
+| Set string, 64 B | 354 ns | 525 ns |
+| Get string, 64 B | 168 ns | 179 ns |
+| Set string, 16 B | 286 ns | 299 ns |
+| Get string, 16 B | 151 ns | 166 ns |
+| Set number | 226 ns | 226 ns |
+| Get number | 110 ns | 130 ns |
+| Get missing key | 109 ns | 125 ns |
 
-Two things worth knowing about these numbers. Small strings (≤ ~22 bytes) are stored inline with zero heap allocation. And the measurement uses warm stores: on a near-empty store MMKV's 64-byte set is faster (an mmap append is cheapest while the file is tiny), but once a store holds real data its writes settle around 550 ns while scc stays flat — the WAL write path does not degrade as the store grows. The Rust core itself (criterion, Apple Silicon): get 26 ns, set/overwrite 27 ns in-memory and 77 ns with the WAL attached.
+These are one simulator run, not a universal device claim. The write cases measure API-return latency, not `fsync`; call `flush()` when you need an explicit durability barrier. The `setMany` row compares one atomic SCC batch call with 100 independent MMKV scalar calls, so their crash-atomicity semantics differ. Run the benchmark yourself with the in-app **Run benchmark** button; the app persists all raw samples and methodology metadata. For automated Release runs, set `EXPO_PUBLIC_SCC_AUTORUN_BENCHMARK=1` before building.
 
 ## Install
 
@@ -42,6 +49,8 @@ npm install react-native-scc-storage react-native-nitro-modules
 ```
 
 ### Expo
+
+The config plugin declares Expo SDK 57 or newer as an optional peer.
 
 ```json
 { "plugins": ["react-native-scc-storage"] }
@@ -276,7 +285,7 @@ Reading a key that holds a different type returns `undefined` (matching react-na
 
 Writes update the in-memory map synchronously, then stream to a write-ahead log on a dedicated background thread. The writer batches records into group commits (8 ms or 128 KiB, whichever comes first). With `durability: 'relaxed'` (default) the log is fsynced about once per second; with `'strict'` every group commit is fsynced. `flush()` / `flushAsync()` is the explicit barrier: it returns only after everything written so far is on disk.
 
-On restart the store recovers from snapshot + WAL replay. Every record carries a CRC32; a torn tail from a hard kill is truncated and recovery continues — committed data is never lost or corrupted. When the WAL outgrows `max(4 MiB, 2 × snapshot size)`, the background thread compacts it into a snapshot written atomically (temp file + rename), so readers and writers never block on compaction.
+On restart the store recovers from snapshot + WAL replay. Every record carries a CRC32; a torn tail from a hard kill is truncated and recovery continues — committed data is never lost or corrupted. When the WAL outgrows `max(4 MiB, 2 × snapshot size)`, the background writer compacts it into an atomically replaced snapshot, keeping recovery files bounded without moving disk I/O onto the JS thread.
 
 ## Architecture
 

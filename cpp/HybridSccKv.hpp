@@ -5,6 +5,7 @@
 #include "scc_kv_ffi.h"
 
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -29,9 +30,9 @@ public:
       keyPtr = reinterpret_cast<const uint8_t*>(encryptionKey->data());
       keyLen = encryptionKey->size();
     }
-    size_t maxEntriesValue = optionalPositiveInteger(maxEntries, "maxEntries");
-    uint64_t sweepValue = static_cast<uint64_t>(
-        optionalPositiveInteger(ttlSweepIntervalMs, "ttlSweepIntervalMs"));
+    size_t maxEntriesValue = optionalPositiveInteger<size_t>(maxEntries, "maxEntries");
+    uint64_t sweepValue =
+        optionalPositiveInteger<uint64_t>(ttlSweepIntervalMs, "ttlSweepIntervalMs");
     SccKvStore* handle =
         scc_kv_open(dir.c_str(), id.c_str(), strictDurability, recreate, keyPtr, keyLen,
                     maxEntriesValue, sweepValue);
@@ -42,23 +43,27 @@ public:
   std::shared_ptr<HybridSccKvInstanceSpec> inMemory(const std::string& id,
                                                     std::optional<double> maxEntries,
                                                     std::optional<double> ttlSweepIntervalMs) override {
-    size_t maxEntriesValue = optionalPositiveInteger(maxEntries, "maxEntries");
-    uint64_t sweepValue = static_cast<uint64_t>(
-        optionalPositiveInteger(ttlSweepIntervalMs, "ttlSweepIntervalMs"));
+    size_t maxEntriesValue = optionalPositiveInteger<size_t>(maxEntries, "maxEntries");
+    uint64_t sweepValue =
+        optionalPositiveInteger<uint64_t>(ttlSweepIntervalMs, "ttlSweepIntervalMs");
     SccKvStore* handle = scc_kv_in_memory(id.c_str(), maxEntriesValue, sweepValue);
     if (handle == nullptr) throwLastError("inMemory");
     return std::make_shared<HybridSccKvInstance>(handle);
   }
 
 private:
-  static size_t optionalPositiveInteger(const std::optional<double>& value, const char* name) {
+  template <typename Integer>
+  static Integer optionalPositiveInteger(const std::optional<double>& value, const char* name) {
     if (!value.has_value()) return 0;
     constexpr double maxSafeInteger = 9007199254740991.0;
     double v = *value;
-    if (!std::isfinite(v) || v <= 0 || v > maxSafeInteger || std::floor(v) != v) {
-      throw std::runtime_error(std::string(name) + " must be a positive safe integer");
+    double platformMax = static_cast<double>(std::numeric_limits<Integer>::max());
+    if (!std::isfinite(v) || v <= 0 || v > maxSafeInteger || v > platformMax ||
+        std::floor(v) != v) {
+      throw std::runtime_error(std::string(name) +
+                               " must be a positive safe integer supported by this platform");
     }
-    return static_cast<size_t>(v);
+    return static_cast<Integer>(v);
   }
 
   [[noreturn]] static void throwLastError(const char* op) {

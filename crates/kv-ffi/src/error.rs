@@ -12,12 +12,10 @@ pub(crate) fn set_error(msg: impl Into<String>) {
     LAST_ERROR.with(|slot| *slot.borrow_mut() = Some(c));
 }
 
-pub(crate) fn clear_error() {
-    LAST_ERROR.with(|slot| *slot.borrow_mut() = None);
-}
-
-/// Returns the last error on this thread as a heap CString, or NULL.
-/// Caller frees with `scc_kv_free_cstring`.
+/// Returns and clears the most recent error on this thread as a heap CString,
+/// or NULL. Only call after an FFI function reports failure; successful calls
+/// intentionally do not clear a prior, unread error. Caller frees the result
+/// with `scc_kv_free_cstring`.
 #[unsafe(no_mangle)]
 pub extern "C" fn scc_kv_last_error() -> *mut c_char {
     LAST_ERROR.with(|slot| match slot.borrow_mut().take() {

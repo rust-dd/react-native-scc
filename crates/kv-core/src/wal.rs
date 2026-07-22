@@ -1,6 +1,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -10,8 +11,14 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded, unbounded};
 use crate::crypto::{self, Cipher};
 use crate::error::{Error, Result};
 use crate::notify::Listeners;
-use crate::record::{self, Op};
 use crate::snapshot;
+
+mod framing;
+mod sweep;
+
+use framing::write_encrypted_frames;
+
+const MAX_RETAINED_BUFFER_CAPACITY: usize = 256 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Durability {
@@ -32,6 +39,8 @@ pub(crate) struct WriterConfig {
     pub sweep_interval: Duration,
     pub max_entries: Option<usize>,
     pub compact_gate: Arc<RwLock<()>>,
+    pub mutation_gate: Arc<Mutex<()>>,
+    pub closed: Arc<AtomicBool>,
 }
 
 enum Msg {
@@ -76,6 +85,7 @@ impl WalHandle {
         let error = Arc::new(Mutex::new(None));
         let writer = Writer {
             cfg,
+            tx: tx.clone(),
             map,
             file,
             error: error.clone(),
@@ -140,8 +150,17 @@ impl WalHandle {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn shutdown(&self) {
+        self.signal_shutdown();
+        self.join();
+    }
+
+    pub(crate) fn signal_shutdown(&self) {
         let _ = self.tx.send(Msg::Shutdown);
+    }
+
+    pub(crate) fn join(&self) {
         if let Some(join) = self.join.lock().unwrap().take() {
             let _ = join.join();
         }
@@ -155,6 +174,7 @@ impl WalHandle {
 
 struct Writer {
     cfg: WriterConfig,
+    tx: Sender<Msg>,
     map: Arc<crate::ValueMap>,
     file: File,
     error: Arc<Mutex<Option<String>>>,
@@ -172,12 +192,16 @@ impl Writer {
     fn run(mut self, rx: Receiver<Msg>) {
         loop {
             match rx.recv_timeout(self.next_timeout()) {
-                Ok(Msg::Append(rec)) => {
+                Ok(Msg::Append(mut rec)) => {
                     if self.first_pending.is_none() {
                         self.first_pending = Some(Instant::now());
                     }
-                    self.pending.extend_from_slice(&rec);
-                    let _ = self.pool_tx.try_send(rec);
+                    if self.pending.is_empty() {
+                        std::mem::swap(&mut self.pending, &mut rec);
+                    } else {
+                        self.pending.extend_from_slice(&rec);
+                    }
+                    self.recycle(rec);
                     if self.pending.len() >= self.cfg.group_bytes {
                         self.write_batch();
                     }
@@ -247,63 +271,35 @@ impl Writer {
         }
     }
 
-    /// Reclaims expired keys and, when `max_entries` is set, evicts arbitrary
-    /// live keys until the store fits. Deletions are WAL-logged and notified
-    /// like any other mutation.
-    fn sweep_and_evict(&mut self) {
-        let now = crate::now_ms();
-        let (expired, evicted) = crate::compute_doomed(&self.map, now, self.cfg.max_entries);
-        for key in expired {
-            // Re-check under the entry lock: the key may have been rewritten
-            // with a live value since the scan judged it expired.
-            if self
-                .map
-                .remove_if_sync(&key, |slot| slot.is_expired(now))
-                .is_some()
-            {
-                self.record_sweep_removal(&key);
-            }
-        }
-        for key in evicted {
-            if self.map.remove_sync(&key).is_some() {
-                self.record_sweep_removal(&key);
-            }
-        }
-    }
-
-    fn record_sweep_removal(&mut self, key: &str) {
-        if self.first_pending.is_none() {
-            self.first_pending = Some(Instant::now());
-        }
-        record::encode(&Op::Delete { key }, &mut self.pending);
-        self.cfg.listeners.notify(Some(key));
-    }
-
     fn write_batch(&mut self) {
         if self.pending.is_empty() {
             self.first_pending = None;
             return;
         }
-        let batch = std::mem::take(&mut self.pending);
         self.first_pending = None;
-        let on_disk: Vec<u8>;
-        let bytes: &[u8] = match &self.cfg.cipher {
+        let result = match &self.cfg.cipher {
             Some(cipher) => {
-                let mut framed = Vec::with_capacity(batch.len() + 32);
-                if let Err(e) = cipher.encrypt_frame(&batch, &mut framed) {
-                    self.fail(e.to_string());
-                    return;
-                }
-                on_disk = framed;
-                &on_disk
+                write_encrypted_frames(&mut self.file, &self.cfg.wal_path, cipher, &self.pending)
             }
-            None => &batch,
+            None => self
+                .file
+                .write_all(&self.pending)
+                .map(|()| self.pending.len() as u64)
+                .map_err(|source| Error::Io {
+                    path: self.cfg.wal_path.clone(),
+                    source,
+                }),
         };
-        if let Err(e) = self.file.write_all(bytes) {
-            self.fail(e.to_string());
-            return;
-        }
-        self.wal_len += bytes.len() as u64;
+        let written = match result {
+            Ok(written) => written,
+            Err(error) => {
+                self.reset_pending();
+                self.fail(error.to_string());
+                return;
+            }
+        };
+        self.reset_pending();
+        self.wal_len += written;
         self.dirty = true;
         if self.cfg.durability == Durability::Strict {
             self.sync();
@@ -326,10 +322,8 @@ impl Writer {
         self.cfg.compact_min.max(2 * self.snap_len)
     }
 
+    /// The write lock keeps a snapshot from observing half of an atomic batch.
     fn compact(&mut self) {
-        // Write side of the compaction gate: batch writers hold the read side
-        // across map application + append, so the snapshot below can never
-        // capture a half-applied batch whose record the truncation discards.
         let gate = Arc::clone(&self.cfg.compact_gate);
         let _gate = gate.write().unwrap();
         match snapshot::write_atomic(&self.cfg.snap_path, &self.map, self.cfg.cipher.as_deref()) {
@@ -362,140 +356,25 @@ impl Writer {
             *slot = Some(msg);
         }
     }
+
+    fn recycle(&self, mut buffer: Vec<u8>) {
+        if should_retain_capacity(buffer.capacity()) {
+            buffer.clear();
+            let _ = self.pool_tx.try_send(buffer);
+        }
+    }
+
+    fn reset_pending(&mut self) {
+        self.pending.clear();
+        if !should_retain_capacity(self.pending.capacity()) {
+            self.pending = Vec::new();
+        }
+    }
+}
+
+fn should_retain_capacity(capacity: usize) -> bool {
+    capacity <= MAX_RETAINED_BUFFER_CAPACITY
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::record::{self, DecodeOutcome, Op, OwnedOp};
-    use crate::value::Value;
-
-    fn test_cfg(dir: &std::path::Path) -> WriterConfig {
-        WriterConfig {
-            wal_path: dir.join("t.wal"),
-            snap_path: dir.join("t.snap"),
-            durability: Durability::Relaxed,
-            group_window: Duration::from_millis(5),
-            group_bytes: 128 * 1024,
-            fsync_interval: Duration::from_millis(50),
-            compact_min: u64::MAX,
-            cipher: None,
-            listeners: Arc::new(Listeners::new()),
-            sweep_interval: Duration::from_secs(3600),
-            max_entries: None,
-            compact_gate: Arc::new(RwLock::new(())),
-        }
-    }
-
-    fn encode_set(key: &str, value: &Value) -> Vec<u8> {
-        let mut buf = Vec::new();
-        record::encode(&Op::Set { key, value }, &mut buf);
-        buf
-    }
-
-    fn decode_all(data: &[u8]) -> Vec<OwnedOp> {
-        let mut ops = Vec::new();
-        let mut off = crypto::HEADER_LEN;
-        while off < data.len() {
-            match record::decode(&data[off..]) {
-                DecodeOutcome::Record { op, consumed } => {
-                    ops.push(op);
-                    off += consumed;
-                }
-                other => panic!("bad record at {off}: {other:?}"),
-            }
-        }
-        ops
-    }
-
-    #[test]
-    fn flush_makes_records_durable() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = test_cfg(dir.path());
-        let wal_path = cfg.wal_path.clone();
-        let handle = WalHandle::spawn(cfg, Arc::new(crate::new_value_map()), 0, 0).unwrap();
-        handle.append(encode_set("a", &Value::Num(1.0))).unwrap();
-        handle
-            .append(encode_set("b", &Value::Str("x".into())))
-            .unwrap();
-        handle.flush().unwrap();
-        let ops = decode_all(&std::fs::read(&wal_path).unwrap());
-        assert_eq!(ops.len(), 2);
-        assert_eq!(
-            ops[0],
-            OwnedOp::Set {
-                key: "a".into(),
-                value: Value::Num(1.0)
-            }
-        );
-        handle.shutdown();
-    }
-
-    #[test]
-    fn group_window_writes_without_flush() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = test_cfg(dir.path());
-        let wal_path = cfg.wal_path.clone();
-        let handle = WalHandle::spawn(cfg, Arc::new(crate::new_value_map()), 0, 0).unwrap();
-        handle.append(encode_set("k", &Value::Bool(true))).unwrap();
-        std::thread::sleep(Duration::from_millis(100));
-        let ops = decode_all(&std::fs::read(&wal_path).unwrap());
-        assert_eq!(ops.len(), 1);
-        handle.shutdown();
-    }
-
-    #[test]
-    fn shutdown_drains_pending() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = test_cfg(dir.path());
-        let wal_path = cfg.wal_path.clone();
-        let handle = WalHandle::spawn(cfg, Arc::new(crate::new_value_map()), 0, 0).unwrap();
-        for i in 0..10 {
-            handle
-                .append(encode_set(&format!("k{i}"), &Value::Num(i as f64)))
-                .unwrap();
-        }
-        handle.shutdown();
-        assert_eq!(decode_all(&std::fs::read(&wal_path).unwrap()).len(), 10);
-    }
-
-    #[test]
-    fn sticky_error_rejects_appends_and_flush() {
-        let dir = tempfile::tempdir().unwrap();
-        let handle =
-            WalHandle::spawn(test_cfg(dir.path()), Arc::new(crate::new_value_map()), 0, 0).unwrap();
-        handle.inject_error("disk full");
-        assert!(matches!(
-            handle.append(encode_set("k", &Value::Num(1.0))),
-            Err(Error::Background(msg)) if msg == "disk full"
-        ));
-        assert!(matches!(handle.flush(), Err(Error::Background(_))));
-        handle.shutdown();
-    }
-
-    #[test]
-    fn compaction_truncates_wal_and_writes_snapshot() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut cfg = test_cfg(dir.path());
-        cfg.compact_min = 256;
-        let wal_path = cfg.wal_path.clone();
-        let snap_path = cfg.snap_path.clone();
-        let map = Arc::new(crate::new_value_map());
-        let _ = map.insert_sync("final".to_string(), crate::slot(Value::Str("state".into())));
-        let handle = WalHandle::spawn(cfg, map.clone(), 0, 0).unwrap();
-        for i in 0..50 {
-            handle
-                .append(encode_set("hot", &Value::Num(i as f64)))
-                .unwrap();
-            handle.flush().unwrap();
-        }
-        handle.shutdown();
-        assert!(std::fs::metadata(&wal_path).unwrap().len() < 256 + crypto::HEADER_LEN as u64);
-        let loaded = crate::new_value_map();
-        snapshot::load(&snap_path, &loaded, None).unwrap();
-        assert_eq!(
-            loaded.read_sync("final", |_, s| s.value.clone()),
-            Some(Value::Str("state".into()))
-        );
-    }
-}
+mod tests;

@@ -6,6 +6,7 @@ mod batch;
 mod buffers;
 mod error;
 mod handle;
+mod multi_get;
 
 use std::ffi::CStr;
 use std::os::raw::c_char;
@@ -17,8 +18,9 @@ use kv_core::{Durability, OpenOptions, Value};
 
 use batch::PackedEntries;
 use buffers::vec_to_raw;
-use error::{clear_error, set_error};
+use error::set_error;
 pub use handle::SccKvStore;
+pub use multi_get::scc_kv_get_many_str;
 
 unsafe fn cstr<'a>(p: *const c_char, what: &str) -> Result<&'a str, String> {
     if p.is_null() {
@@ -29,8 +31,7 @@ unsafe fn cstr<'a>(p: *const c_char, what: &str) -> Result<&'a str, String> {
         .map_err(|_| format!("{what} is not valid UTF-8"))
 }
 
-/// Keys cross the boundary as (ptr, len) — no strlen, no UTF-8 scan. JSI
-/// guarantees valid UTF-8; debug builds assert it.
+/// Keys cross the boundary as (ptr, len), avoiding `strlen`.
 unsafe fn key_str<'a>(p: *const u8, len: usize) -> Result<&'a str, String> {
     if p.is_null() {
         if len == 0 {
@@ -39,15 +40,12 @@ unsafe fn key_str<'a>(p: *const u8, len: usize) -> Result<&'a str, String> {
         return Err("key is null".to_string());
     }
     let bytes = unsafe { std::slice::from_raw_parts(p, len) };
-    debug_assert!(
-        std::str::from_utf8(bytes).is_ok(),
-        "key must be valid UTF-8"
-    );
-    Ok(unsafe { std::str::from_utf8_unchecked(bytes) })
+    std::str::from_utf8(bytes).map_err(|_| "key is not valid UTF-8".to_string())
 }
 
 fn guard<T>(sentinel: T, f: impl FnOnce() -> Result<T, String>) -> T {
-    clear_error();
+    // Like errno, the last error is only defined after a failed call. Keeping
+    // it avoids a thread-local write on every successful hot-path operation.
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(Ok(v)) => v,
         Ok(Err(msg)) => {
@@ -87,7 +85,7 @@ pub unsafe extern "C" fn scc_kv_apply_batch(
         let s = unsafe { store(handle) }?;
         let data = unsafe { data_slice(ptr, len) }?;
         let ops = batch::decode_batch(data)?;
-        s.store.apply_batch(&ops).map_err(|e| e.to_string())?;
+        s.store.apply_batch_owned(ops).map_err(|e| e.to_string())?;
         Ok(0)
     })
 }
@@ -439,11 +437,8 @@ pub unsafe extern "C" fn scc_kv_set_str(
         let s = unsafe { store(h) }?;
         let key = unsafe { key_str(key, key_len) }?;
         let bytes = unsafe { data_slice(data, len) }?;
-        debug_assert!(
-            std::str::from_utf8(bytes).is_ok(),
-            "scc_kv_set_str requires valid UTF-8"
-        );
-        let value = unsafe { kv_core::CompactString::from_utf8_unchecked(bytes) };
+        let value = kv_core::CompactString::from_utf8(bytes)
+            .map_err(|_| "string value is not valid UTF-8".to_string())?;
         s.store
             .set(key, Value::Str(value))
             .map_err(|e| e.to_string())?;

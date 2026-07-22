@@ -279,7 +279,8 @@ fn parse_batch(mut rest: &[u8]) -> Option<Vec<OwnedBatchSub>> {
             1 => {
                 let tag = *rest.get(key_end)?;
                 let val_len =
-                    u32::from_le_bytes(rest.get(key_end + 1..key_end + 5)?.try_into().ok()?) as usize;
+                    u32::from_le_bytes(rest.get(key_end + 1..key_end + 5)?.try_into().ok()?)
+                        as usize;
                 let val_start = key_end + 5;
                 let val_end = val_start.checked_add(val_len)?;
                 let value = Value::decode(tag, rest.get(val_start..val_end)?)?;
@@ -289,11 +290,7 @@ fn parse_batch(mut rest: &[u8]) -> Option<Vec<OwnedBatchSub>> {
             _ => return None,
         }
     }
-    if rest.is_empty() {
-        Some(ops)
-    } else {
-        None
-    }
+    if rest.is_empty() { Some(ops) } else { None }
 }
 
 pub(crate) fn apply(map: &crate::ValueMap, op: OwnedOp) {

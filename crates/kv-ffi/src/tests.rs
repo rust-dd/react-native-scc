@@ -179,6 +179,50 @@ fn errors_are_reported() {
 }
 
 #[test]
+fn invalid_utf8_is_rejected_on_fast_paths() {
+    let id = c("utf8-errors");
+    let h = unsafe { scc_kv_in_memory(id.as_ptr(), 0, 0) };
+    let invalid = [0xff];
+
+    assert_eq!(unsafe { scc_kv_set_f64(h, invalid.as_ptr(), 1, 1.0) }, -1);
+    assert!(last_error().unwrap().contains("key is not valid UTF-8"));
+    assert_eq!(
+        unsafe { scc_kv_set_str(h, b"k".as_ptr(), 1, invalid.as_ptr(), 1) },
+        -1
+    );
+    assert!(
+        last_error()
+            .unwrap()
+            .contains("string value is not valid UTF-8")
+    );
+
+    let mut bad_key = Vec::new();
+    bad_key.extend_from_slice(&1u32.to_le_bytes());
+    bad_key.push(0xff);
+    bad_key.extend_from_slice(&1u32.to_le_bytes());
+    bad_key.push(b'x');
+    assert_eq!(
+        unsafe { scc_kv_set_many_str(h, bad_key.as_ptr(), bad_key.len(), 1) },
+        -1
+    );
+    assert!(last_error().unwrap().contains("key is not valid UTF-8"));
+
+    let mut bad_value = Vec::new();
+    bad_value.extend_from_slice(&1u32.to_le_bytes());
+    bad_value.push(b'k');
+    bad_value.extend_from_slice(&1u32.to_le_bytes());
+    bad_value.push(0xff);
+    assert_eq!(
+        unsafe { scc_kv_set_many_str(h, bad_value.as_ptr(), bad_value.len(), 1) },
+        -1
+    );
+    assert!(last_error().unwrap().contains("value is not valid UTF-8"));
+
+    assert_eq!(unsafe { scc_kv_close(h) }, 0);
+    unsafe { scc_kv_release(h) };
+}
+
+#[test]
 fn empty_string_value_round_trips() {
     let id = c("empty-test");
     let h = unsafe { scc_kv_in_memory(id.as_ptr(), 0, 0) };
@@ -325,317 +369,7 @@ fn batch_set_many_applies_all_and_persists() {
     unsafe { scc_kv_release(h2) };
 }
 
-#[test]
-fn ttl_and_encryption_via_ffi() {
-    let dir = tempfile::tempdir().unwrap();
-    let dir_c = c(dir.path().to_str().unwrap());
-    let id = c("vault");
-    let pw = b"passphrase";
-    let h = unsafe {
-        scc_kv_open(
-            dir_c.as_ptr(),
-            id.as_ptr(),
-            true,
-            false,
-            pw.as_ptr(),
-            pw.len(),
-            0,
-            0,
-        )
-    };
-    assert!(!h.is_null(), "{:?}", last_error());
-
-    assert_eq!(
-        unsafe { scc_kv_set_ttl(h, "tmp".as_ptr(), 3, 0, b"v".as_ptr(), 1, 100) },
-        0
-    );
-    assert_eq!(
-        unsafe { scc_kv_set_str(h, "keep".as_ptr(), 4, b"x".as_ptr(), 1) },
-        0
-    );
-    assert_eq!(get_owned(h, "tmp"), Some((0, b"v".to_vec())));
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    assert_eq!(get_owned(h, "tmp"), None);
-    assert_eq!(unsafe { scc_kv_flush(h) }, 0);
-    assert_eq!(unsafe { scc_kv_close(h) }, 0);
-    unsafe { scc_kv_release(h) };
-
-    let raw = std::fs::read(dir.path().join("vault.wal")).unwrap();
-    assert!(!raw.windows(4).any(|w| w == b"keep"));
-
-    let h2 = unsafe {
-        scc_kv_open(
-            dir_c.as_ptr(),
-            id.as_ptr(),
-            true,
-            false,
-            pw.as_ptr(),
-            pw.len(),
-            0,
-            0,
-        )
-    };
-    assert!(!h2.is_null());
-    assert_eq!(get_owned(h2, "keep"), Some((0, b"x".to_vec())));
-    assert_eq!(unsafe { scc_kv_close(h2) }, 0);
-    unsafe { scc_kv_release(h2) };
-
-    let wrong = b"other";
-    let h3 = unsafe {
-        scc_kv_open(
-            dir_c.as_ptr(),
-            id.as_ptr(),
-            true,
-            false,
-            wrong.as_ptr(),
-            wrong.len(),
-            0,
-            0,
-        )
-    };
-    assert!(h3.is_null());
-    assert!(last_error().unwrap().contains("wrong encryption key"));
-}
-
-#[test]
-fn open_accepts_eviction_options() {
-    let dir = tempfile::tempdir().unwrap();
-    let dir_c = c(dir.path().to_str().unwrap());
-    let id = c("evict-ffi");
-    let h = unsafe {
-        scc_kv_open(
-            dir_c.as_ptr(),
-            id.as_ptr(),
-            true,
-            false,
-            std::ptr::null(),
-            0,
-            2,
-            20,
-        )
-    };
-    assert!(!h.is_null(), "{:?}", last_error());
-
-    for i in 0..6 {
-        let key = format!("k{i}");
-        assert_eq!(set(h, &key, 0, b"value"), 0);
-    }
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    assert!(unsafe { scc_kv_len(h) } <= 2);
-
-    assert_eq!(unsafe { scc_kv_close(h) }, 0);
-    unsafe { scc_kv_release(h) };
-}
-
-#[test]
-fn eviction_keeps_live_keys_when_many_expire_at_once() {
-    let dir = tempfile::tempdir().unwrap();
-    let dir_c = c(dir.path().to_str().unwrap());
-    let id = c("evict-live");
-    let h = unsafe {
-        scc_kv_open(
-            dir_c.as_ptr(),
-            id.as_ptr(),
-            false,
-            false,
-            std::ptr::null(),
-            0,
-            100,
-            20,
-        )
-    };
-    assert!(!h.is_null(), "{:?}", last_error());
-
-    // 50 permanent keys, comfortably under maxEntries=100 — must never be evicted.
-    for i in 0..50 {
-        let key = format!("keep{i}");
-        assert_eq!(set(h, &key, 0, b"live"), 0);
-    }
-    // More than the 4096 sweep-scan cap of short-TTL keys, so a single sweep sees
-    // more expired entries than it collects. Guards against computing the eviction
-    // target from `map.len() - min(expired, 4096)`, which over-counts live entries
-    // and evicts the permanent keys.
-    for i in 0..5000 {
-        let key = format!("tmp{i}");
-        assert_eq!(
-            unsafe { scc_kv_set_ttl(h, key.as_ptr(), key.len(), 0, b"x".as_ptr(), 1, 1) },
-            0
-        );
-    }
-
-    std::thread::sleep(std::time::Duration::from_millis(400));
-
-    for i in 0..50 {
-        let key = format!("keep{i}");
-        assert!(
-            get_owned(h, &key).is_some(),
-            "live key {key} was evicted while under the cap"
-        );
-    }
-    assert!(unsafe { scc_kv_len(h) } <= 100);
-
-    assert_eq!(unsafe { scc_kv_close(h) }, 0);
-    unsafe { scc_kv_release(h) };
-}
-
-fn pack_batch(ops: &[(u8, &str, u8, &[u8])]) -> Vec<u8> {
-    let mut buf = Vec::new();
-    buf.extend_from_slice(&(ops.len() as u32).to_le_bytes());
-    for (op, key, tag, val) in ops {
-        buf.push(*op);
-        buf.extend_from_slice(&(key.len() as u32).to_le_bytes());
-        buf.extend_from_slice(key.as_bytes());
-        if *op == 1 {
-            buf.push(*tag);
-            buf.extend_from_slice(&(val.len() as u32).to_le_bytes());
-            buf.extend_from_slice(val);
-        }
-    }
-    buf
-}
-
-#[test]
-fn apply_batch_via_ffi() {
-    let dir = tempfile::tempdir().unwrap();
-    let dir_c = c(dir.path().to_str().unwrap());
-    let id = c("tx-ffi");
-    let h = unsafe {
-        scc_kv_open(
-            dir_c.as_ptr(),
-            id.as_ptr(),
-            true,
-            false,
-            std::ptr::null(),
-            0,
-            0,
-            0,
-        )
-    };
-    assert!(!h.is_null(), "{:?}", last_error());
-    assert_eq!(set(h, "drop", 0, b"x"), 0);
-    let packed = pack_batch(&[(1, "keep", 0, b"v"), (0, "drop", 0, b"")]);
-    assert_eq!(
-        unsafe { scc_kv_apply_batch(h, packed.as_ptr(), packed.len()) },
-        0,
-        "{:?}",
-        last_error()
-    );
-    assert_eq!(get_owned(h, "keep"), Some((0u8, b"v".to_vec())));
-    assert_eq!(get_owned(h, "drop"), None);
-    assert_eq!(unsafe { scc_kv_close(h) }, 0);
-    unsafe { scc_kv_release(h) };
-}
-
-#[test]
-fn in_memory_accepts_eviction_options() {
-    let id = c("evict-mem");
-    let h = unsafe { scc_kv_in_memory(id.as_ptr(), 2, 20) };
-    assert!(!h.is_null(), "{:?}", last_error());
-
-    for i in 0..6 {
-        let key = format!("k{i}");
-        assert_eq!(set(h, &key, 0, b"value"), 0);
-    }
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    assert!(unsafe { scc_kv_len(h) } <= 2);
-
-    assert_eq!(unsafe { scc_kv_close(h) }, 0);
-    unsafe { scc_kv_release(h) };
-}
-
-unsafe extern "C" fn on_change(user_data: *mut std::ffi::c_void, key: *const u8, key_len: usize) {
-    let events = unsafe { &*(user_data as *const std::sync::Mutex<Vec<Option<String>>>) };
-    let entry = if key.is_null() {
-        None
-    } else {
-        let bytes = unsafe { std::slice::from_raw_parts(key, key_len) };
-        Some(String::from_utf8(bytes.to_vec()).unwrap())
-    };
-    events.lock().unwrap().push(entry);
-}
-
-#[test]
-fn listener_receives_set_delete_clear_and_batch() {
-    use std::sync::{Arc, Mutex};
-
-    let events: Arc<Mutex<Vec<Option<String>>>> = Arc::new(Mutex::new(Vec::new()));
-
-    let id_c = c("listener-test");
-    let h = unsafe { scc_kv_in_memory(id_c.as_ptr(), 0, 0) };
-    let user_data = Arc::as_ptr(&events) as *mut std::ffi::c_void;
-    let sub = unsafe { scc_kv_subscribe(h, on_change, user_data) };
-    assert!(sub > 0);
-
-    assert_eq!(set(h, "k", 0, b"v"), 0);
-    assert_eq!(unsafe { scc_kv_remove(h, "k".as_ptr(), 1) }, 1);
-    assert_eq!(unsafe { scc_kv_clear(h) }, 0);
-    let packed = pack_entries(&[("p", "1"), ("q", "2")]);
-    assert_eq!(
-        unsafe { scc_kv_set_many_str(h, packed.as_ptr(), packed.len(), 2) },
-        0
-    );
-    assert_eq!(
-        *events.lock().unwrap(),
-        vec![
-            Some("k".to_string()),
-            Some("k".to_string()),
-            None,
-            Some("p".to_string()),
-            Some("q".to_string())
-        ]
-    );
-
-    assert_eq!(unsafe { scc_kv_unsubscribe(h, sub) }, 1);
-    assert_eq!(unsafe { scc_kv_unsubscribe(h, sub) }, 0);
-    assert_eq!(set(h, "k", 0, b"v"), 0);
-    assert_eq!(events.lock().unwrap().len(), 5);
-
-    assert_eq!(unsafe { scc_kv_close(h) }, 0);
-    unsafe { scc_kv_release(h) };
-}
-
-#[test]
-fn listener_sees_writes_from_other_handles() {
-    use std::sync::{Arc, Mutex};
-
-    let events: Arc<Mutex<Vec<Option<String>>>> = Arc::new(Mutex::new(Vec::new()));
-
-    let dir = tempfile::tempdir().unwrap();
-    let dir_c = c(dir.path().to_str().unwrap());
-    let id_c = c("shared");
-    let h1 = unsafe {
-        scc_kv_open(
-            dir_c.as_ptr(),
-            id_c.as_ptr(),
-            false,
-            false,
-            std::ptr::null(),
-            0,
-            0,
-            0,
-        )
-    };
-    let h2 = unsafe {
-        scc_kv_open(
-            dir_c.as_ptr(),
-            id_c.as_ptr(),
-            false,
-            false,
-            std::ptr::null(),
-            0,
-            0,
-            0,
-        )
-    };
-    let sub =
-        unsafe { scc_kv_subscribe(h1, on_change, Arc::as_ptr(&events) as *mut std::ffi::c_void) };
-    assert!(sub > 0);
-
-    assert_eq!(set(h2, "cross", 0, b"x"), 0);
-    assert_eq!(*events.lock().unwrap(), vec![Some("cross".to_string())]);
-
-    assert_eq!(unsafe { scc_kv_unsubscribe(h1, sub) }, 1);
-    assert_eq!(unsafe { scc_kv_close(h1) }, 0);
-    unsafe { scc_kv_release(h1) };
-    unsafe { scc_kv_release(h2) };
-}
+mod features;
+mod listeners;
+mod multi_get;
+mod transactions;

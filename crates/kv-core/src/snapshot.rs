@@ -18,6 +18,15 @@ pub(crate) fn write_atomic(
     map: &crate::ValueMap,
     cipher: Option<&Cipher>,
 ) -> Result<u64> {
+    write_atomic_impl(path, map, cipher, crypto::MAX_FRAME_PLAINTEXT)
+}
+
+fn write_atomic_impl(
+    path: &Path,
+    map: &crate::ValueMap,
+    cipher: Option<&Cipher>,
+    frame_plaintext_limit: usize,
+) -> Result<u64> {
     let now = crate::now_ms();
     let mut records = Vec::new();
     map.iter_sync(|k, slot| {
@@ -43,15 +52,19 @@ pub(crate) fn write_atomic(
         }
         true
     });
-    let mut buf = Vec::with_capacity(crypto::HEADER_LEN + records.len() + 32);
-    buf.extend_from_slice(&crypto::header_bytes(cipher.is_some()));
-    match cipher {
-        Some(cipher) => cipher.encrypt_frame(&records, &mut buf)?,
-        None => buf.extend_from_slice(&records),
-    }
     let tmp = path.with_extension("tmp");
     let mut file = fs::File::create(&tmp).map_err(|e| io_err(&tmp, e))?;
-    file.write_all(&buf).map_err(|e| io_err(&tmp, e))?;
+    let header = crypto::header_bytes(cipher.is_some());
+    file.write_all(&header).map_err(|e| io_err(&tmp, e))?;
+    let body_len = match cipher {
+        Some(cipher) => {
+            write_encrypted_records(&mut file, &tmp, cipher, &records, frame_plaintext_limit)?
+        }
+        None => {
+            file.write_all(&records).map_err(|e| io_err(&tmp, e))?;
+            records.len() as u64
+        }
+    };
     file.sync_all().map_err(|e| io_err(&tmp, e))?;
     drop(file);
     fs::rename(&tmp, path).map_err(|e| io_err(path, e))?;
@@ -60,7 +73,91 @@ pub(crate) fn write_atomic(
     {
         let _ = d.sync_all();
     }
-    Ok(buf.len() as u64)
+    Ok(header.len() as u64 + body_len)
+}
+
+fn write_encrypted_records(
+    file: &mut fs::File,
+    path: &Path,
+    cipher: &Cipher,
+    records: &[u8],
+    frame_plaintext_limit: usize,
+) -> Result<u64> {
+    let mut framed = Vec::new();
+    if records.is_empty() {
+        return write_cipher_frame(file, path, cipher, records, &mut framed);
+    }
+    let mut frame_start = 0usize;
+    let mut record_start = 0usize;
+    let mut written = 0u64;
+    while record_start < records.len() {
+        let record_end = encoded_record_end(records, record_start)?;
+        if record_end - record_start > frame_plaintext_limit {
+            return Err(Error::Crypto(format!(
+                "encoded record exceeds encryption frame limit: {} bytes",
+                record_end - record_start
+            )));
+        }
+        if record_start > frame_start && record_end - frame_start > frame_plaintext_limit {
+            written += write_cipher_frame(
+                file,
+                path,
+                cipher,
+                &records[frame_start..record_start],
+                &mut framed,
+            )?;
+            frame_start = record_start;
+        }
+        record_start = record_end;
+    }
+    written += write_cipher_frame(file, path, cipher, &records[frame_start..], &mut framed)?;
+    Ok(written)
+}
+
+fn encoded_record_end(records: &[u8], offset: usize) -> Result<usize> {
+    let length_end = offset
+        .checked_add(4)
+        .ok_or_else(|| Error::Crypto("snapshot record length overflow".to_string()))?;
+    let payload_len = u32::from_le_bytes(
+        records
+            .get(offset..length_end)
+            .ok_or_else(|| Error::Crypto("truncated encoded snapshot record".to_string()))?
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    let record_end = length_end
+        .checked_add(4)
+        .and_then(|header_end| header_end.checked_add(payload_len))
+        .ok_or_else(|| Error::Crypto("snapshot record length overflow".to_string()))?;
+    if record_end > records.len() {
+        return Err(Error::Crypto(
+            "truncated encoded snapshot record".to_string(),
+        ));
+    }
+    Ok(record_end)
+}
+
+fn write_cipher_frame(
+    file: &mut fs::File,
+    path: &Path,
+    cipher: &Cipher,
+    plaintext: &[u8],
+    framed: &mut Vec<u8>,
+) -> Result<u64> {
+    framed.clear();
+    cipher.encrypt_frame(plaintext, framed)?;
+    file.write_all(framed).map_err(|e| io_err(path, e))?;
+    Ok(framed.len() as u64)
+}
+
+#[cfg(test)]
+fn write_atomic_with_frame_limit(
+    path: &Path,
+    map: &crate::ValueMap,
+    cipher: &Cipher,
+    frame_plaintext_limit: usize,
+) -> Result<u64> {
+    write_atomic_impl(path, map, Some(cipher), frame_plaintext_limit)
 }
 
 /// Maps a file read-only for recovery-time parsing without copying it into
@@ -210,6 +307,35 @@ mod tests {
         load(&path, &loaded, None).unwrap();
         assert_eq!(loaded.len(), 1);
         assert!(loaded.contains_sync("only"));
+    }
+
+    #[test]
+    fn encrypted_snapshot_uses_record_aligned_frames() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.snap");
+        let cipher = Cipher::new(&crypto::derive_encryption_key(b"snapshot-key"));
+        let written = write_atomic_with_frame_limit(&path, &sample_map(), &cipher, 24).unwrap();
+
+        let data = fs::read(&path).unwrap();
+        assert_eq!(written, data.len() as u64);
+        let (_, mut offset) = crypto::parse_header(&data);
+        let mut frames = 0usize;
+        while offset < data.len() {
+            let FrameOutcome::Frame { consumed, .. } = cipher.decrypt_frame(&data[offset..]) else {
+                panic!("expected a complete encrypted frame");
+            };
+            offset += consumed;
+            frames += 1;
+        }
+        assert!(frames > 1);
+
+        let loaded = crate::new_value_map();
+        assert_eq!(load(&path, &loaded, Some(&cipher)).unwrap(), written);
+        assert_eq!(loaded.len(), 3);
+        assert_eq!(
+            loaded.read_sync("b", |_, slot| slot.value.clone()),
+            Some(Value::Str("two".into()))
+        );
     }
 
     #[test]

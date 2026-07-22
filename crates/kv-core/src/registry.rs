@@ -116,7 +116,10 @@ pub fn in_memory(
         return existing;
     }
     let store = if max_entries.is_some() || sweep_interval.is_some() {
-        Store::in_memory_evicting(max_entries, sweep_interval.unwrap_or(Duration::from_secs(30)))
+        Store::in_memory_evicting(
+            max_entries,
+            sweep_interval.unwrap_or(Duration::from_secs(30)),
+        )
     } else {
         Store::in_memory()
     };

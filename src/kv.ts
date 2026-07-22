@@ -30,6 +30,14 @@ function getTtlMs(options?: SetOptions): number | undefined {
   return getPositiveSafeInteger(ttl, 'ttlMs')
 }
 
+function serializeJSON(value: unknown): string {
+  const json = JSON.stringify(value)
+  if (json === undefined) {
+    throw new TypeError('value must be JSON-serializable')
+  }
+  return json
+}
+
 function getPositiveSafeInteger(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new TypeError(`${name} must be a positive safe integer`)
@@ -59,6 +67,8 @@ const TAG_NUM = 1
 const TAG_BOOL = 2
 const TAG_BYTES = 3
 const TAG_JSON = 4
+
+export const INTERNAL_GET_JSON_TEXT = Symbol('scc.getJSONText')
 
 const textEncoder =
   typeof TextEncoder === 'undefined' ? undefined : new TextEncoder()
@@ -175,7 +185,7 @@ class TransactionContext implements KVTransaction {
   }
 
   setJSON(key: string, value: unknown): void {
-    this.writes.set(key, { kind: 'json', json: JSON.stringify(value) })
+    this.writes.set(key, { kind: 'json', json: serializeJSON(value) })
   }
 
   getString(key: string): string | undefined {
@@ -243,13 +253,21 @@ class TransactionContext implements KVTransaction {
   }
 }
 
+let defaultInstance: KV | undefined
+
 export class KV {
   private readonly native: SccKvInstance
-  private readonly listeners = new Set<KVChangeListener>()
+  private readonly listeners = new Set<{ listener: KVChangeListener }>()
   private nativeSubscription: number | undefined
   private readonly keyPrefix: string
 
-  constructor(native: SccKvInstance, keyPrefix = '') {
+  private closed = false
+
+  constructor(
+    native: SccKvInstance,
+    keyPrefix = '',
+    private readonly ownsNative = true
+  ) {
     this.native = native
     this.keyPrefix = keyPrefix
   }
@@ -261,15 +279,22 @@ export class KV {
    * JS thread.
    */
   addOnValueChangedListener(listener: KVChangeListener): KVSubscription {
-    this.listeners.add(listener)
-    this.nativeSubscription ??= this.native.addListener((key) => {
-      const localKey = this.toLocalChangedKey(key ?? null)
-      if (localKey === undefined) return
-      for (const l of this.listeners) l(localKey)
-    })
+    if (this.closed) throw new Error('Cannot subscribe to a closed KV instance')
+    const entry = { listener }
+    this.listeners.add(entry)
+    try {
+      this.nativeSubscription ??= this.native.addListener((key) => {
+        const localKey = this.toLocalChangedKey(key ?? null)
+        if (localKey === undefined) return
+        for (const current of this.listeners) current.listener(localKey)
+      })
+    } catch (error) {
+      this.listeners.delete(entry)
+      throw error
+    }
     return {
       remove: () => {
-        this.listeners.delete(listener)
+        this.listeners.delete(entry)
         if (
           this.listeners.size === 0 &&
           this.nativeSubscription !== undefined
@@ -317,7 +342,7 @@ export class KV {
 
   namespace(prefix: string): KV {
     const normalized = prefix.endsWith(':') ? prefix : `${prefix}:`
-    return new KV(this.native, this.fullKey(normalized))
+    return new KV(this.native, this.fullKey(normalized), false)
   }
 
   getKeysByPrefix(prefix: string): string[] {
@@ -325,13 +350,14 @@ export class KV {
     return this.native.getAllKeys().filter((key) => key.startsWith(fullPrefix))
   }
 
+  /** Deletes the keys in the matching snapshot as one native atomic batch. */
   deleteByPrefix(prefix: string): number {
     const keys = this.getKeysByPrefix(prefix)
-    let removed = 0
-    for (const key of keys) {
-      if (this.native.remove(key)) removed += 1
-    }
-    return removed
+    if (keys.length === 0) return 0
+    this.native.applyBatch(
+      encodeBatch(keys.map((key): EncodedOp => ({ del: true, key })))
+    )
+    return keys.length
   }
 
   observeJSON<T = unknown, S = T | undefined>(
@@ -340,21 +366,39 @@ export class KV {
     listener: (selected: S) => void,
     equals: (a: S, b: S) => boolean = Object.is
   ): KVSubscription {
-    let selected = selector(this.getJSON<T>(key))
-    listener(selected)
-    return this.addOnValueChangedListener((changedKey) => {
+    let selected!: S
+    let initialized = false
+    const subscription = this.addOnValueChangedListener((changedKey) => {
       if (changedKey !== null && changedKey !== key) return
       const next = selector(this.getJSON<T>(key))
-      if (!equals(selected, next)) {
+      if (!initialized || !equals(selected, next)) {
+        initialized = true
         selected = next
         listener(next)
       }
     })
+    try {
+      selected = selector(this.getJSON<T>(key))
+      initialized = true
+      listener(selected)
+      return subscription
+    } catch (error) {
+      subscription.remove()
+      throw error
+    }
   }
 
   set(key: string, value: KVValue, options?: SetOptions): void {
+    const fullKey =
+      this.keyPrefix === '' ? key : `${this.keyPrefix}${key}`
+    if (options === undefined) {
+      if (typeof value === 'string') this.native.setString(fullKey, value)
+      else if (typeof value === 'number') this.native.setNumber(fullKey, value)
+      else if (typeof value === 'boolean') this.native.setBoolean(fullKey, value)
+      else this.native.setBuffer(fullKey, value)
+      return
+    }
     const ttl = getTtlMs(options)
-    const fullKey = this.fullKey(key)
     if (ttl !== undefined) {
       if (typeof value === 'string') this.native.setStringTtl(fullKey, value, ttl)
       else if (typeof value === 'number') this.native.setNumberTtl(fullKey, value, ttl)
@@ -370,7 +414,7 @@ export class KV {
 
   setJSON(key: string, value: unknown, options?: SetOptions): void {
     const ttl = getTtlMs(options)
-    const json = JSON.stringify(value)
+    const json = serializeJSON(value)
     const fullKey = this.fullKey(key)
     if (ttl !== undefined) {
       this.native.setJsonTtl(fullKey, json, ttl)
@@ -380,32 +424,50 @@ export class KV {
   }
 
   getString(key: string): string | undefined {
-    return this.native.getString(this.fullKey(key))
+    return this.native.getString(
+      this.keyPrefix === '' ? key : `${this.keyPrefix}${key}`
+    )
   }
 
   getNumber(key: string): number | undefined {
-    return this.native.getNumber(this.fullKey(key))
+    return this.native.getNumber(
+      this.keyPrefix === '' ? key : `${this.keyPrefix}${key}`
+    )
   }
 
   getBoolean(key: string): boolean | undefined {
-    return this.native.getBoolean(this.fullKey(key))
+    return this.native.getBoolean(
+      this.keyPrefix === '' ? key : `${this.keyPrefix}${key}`
+    )
   }
 
   getBuffer(key: string): ArrayBuffer | undefined {
-    return this.native.getBuffer(this.fullKey(key))
+    return this.native.getBuffer(
+      this.keyPrefix === '' ? key : `${this.keyPrefix}${key}`
+    )
   }
 
   getJSON<T = unknown>(key: string): T | undefined {
-    const json = this.native.getJson(this.fullKey(key))
+    const json = this[INTERNAL_GET_JSON_TEXT](key)
     return json === undefined ? undefined : (JSON.parse(json) as T)
   }
 
+  [INTERNAL_GET_JSON_TEXT](key: string): string | undefined {
+    return this.native.getJson(
+      this.keyPrefix === '' ? key : `${this.keyPrefix}${key}`
+    )
+  }
+
   contains(key: string): boolean {
-    return this.native.contains(this.fullKey(key))
+    return this.native.contains(
+      this.keyPrefix === '' ? key : `${this.keyPrefix}${key}`
+    )
   }
 
   delete(key: string): boolean {
-    return this.native.remove(this.fullKey(key))
+    return this.native.remove(
+      this.keyPrefix === '' ? key : `${this.keyPrefix}${key}`
+    )
   }
 
   getAllKeys(): string[] {
@@ -427,17 +489,19 @@ export class KV {
   /** Batch string write — one bridge crossing for the whole record set. */
   setMany(entries: Record<string, string>): void {
     const keys = Object.keys(entries)
-    this.native.setManyString(
-      keys.map((key) => this.fullKey(key)),
-      keys.map((k) => entries[k]!)
-    )
+    if (keys.length === 0) return
+    this.native.setManyString(this.fullKeys(keys), Object.values(entries))
   }
 
   /** Batch string read; missing keys come back as undefined. */
   getMany(keys: string[]): (string | undefined)[] {
-    return this.native
-      .getManyString(keys.map((key) => this.fullKey(key)))
-      .map((v) => v ?? undefined)
+    if (keys.length === 0) return []
+    const values: (string | null | undefined)[] =
+      this.native.getManyString(this.fullKeys(keys))
+    for (let index = 0; index < values.length; index++) {
+      if (values[index] === null) values[index] = undefined
+    }
+    return values as (string | undefined)[]
   }
 
   get size(): number {
@@ -445,8 +509,23 @@ export class KV {
     return this.native.size()
   }
 
+  /**
+   * Closes this root store and releases its native change listener. Namespace
+   * views are non-owning and must be discarded instead of closed.
+   */
   close(): void {
+    if (!this.ownsNative) {
+      throw new Error('Cannot close a KV namespace; close its root KV instance')
+    }
+    if (this.closed) return
+    if (this.nativeSubscription !== undefined) {
+      this.native.removeListener(this.nativeSubscription)
+      this.nativeSubscription = undefined
+    }
+    this.listeners.clear()
     this.native.close()
+    this.closed = true
+    if (defaultInstance === this) defaultInstance = undefined
   }
 
   setAsync(key: string, value: KVValue): Promise<void> {
@@ -458,8 +537,9 @@ export class KV {
     return this.native.setBufferAsync(fullKey, value)
   }
 
-  setJSONAsync(key: string, value: unknown): Promise<void> {
-    return this.native.setJsonAsync(this.fullKey(key), JSON.stringify(value))
+  async setJSONAsync(key: string, value: unknown): Promise<void> {
+    const json = serializeJSON(value)
+    return this.native.setJsonAsync(this.fullKey(key), json)
   }
 
   getStringAsync(key: string): Promise<string | undefined> {
@@ -491,14 +571,16 @@ export class KV {
     return this.native.removeAsync(this.fullKey(key))
   }
 
-  getAllKeysAsync(): Promise<string[]> {
+  async getAllKeysAsync(): Promise<string[]> {
     if (this.keyPrefix === '') return this.native.getAllKeysAsync()
-    return Promise.resolve(this.getAllKeys())
+    const keys = await this.getFullKeysByPrefixAsync('')
+    return keys.map((key) => key.slice(this.keyPrefix.length))
   }
 
   async clearAllAsync(): Promise<void> {
     if (this.keyPrefix !== '') {
-      this.clearAll()
+      const keys = await this.getFullKeysByPrefixAsync('')
+      await Promise.all(keys.map((key) => this.native.removeAsync(key)))
       return
     }
     return this.native.clearAllAsync()
@@ -510,21 +592,36 @@ export class KV {
 
   setManyAsync(entries: Record<string, string>): Promise<void> {
     const keys = Object.keys(entries)
+    if (keys.length === 0) return Promise.resolve()
     return this.native.setManyStringAsync(
-      keys.map((key) => this.fullKey(key)),
-      keys.map((k) => entries[k]!)
+      this.fullKeys(keys),
+      Object.values(entries)
     )
   }
 
   async getManyAsync(keys: string[]): Promise<(string | undefined)[]> {
-    const values = await this.native.getManyStringAsync(
-      keys.map((key) => this.fullKey(key))
-    )
-    return values.map((v) => v ?? undefined)
+    if (keys.length === 0) return []
+    const values: (string | null | undefined)[] =
+      await this.native.getManyStringAsync(this.fullKeys(keys))
+    for (let index = 0; index < values.length; index++) {
+      if (values[index] === null) values[index] = undefined
+    }
+    return values as (string | undefined)[]
   }
 
   private fullKey(key: string): string {
-    return `${this.keyPrefix}${key}`
+    return this.keyPrefix === '' ? key : `${this.keyPrefix}${key}`
+  }
+
+  private fullKeys(keys: string[]): string[] {
+    if (this.keyPrefix === '') return keys
+    return keys.map((key) => `${this.keyPrefix}${key}`)
+  }
+
+  private async getFullKeysByPrefixAsync(prefix: string): Promise<string[]> {
+    const fullPrefix = this.fullKey(prefix)
+    const keys = await this.native.getAllKeysAsync()
+    return keys.filter((key) => key.startsWith(fullPrefix))
   }
 
   private toLocalChangedKey(key: string | null): string | null | undefined {
@@ -562,8 +659,6 @@ export function createKV(options: KVOptions = {}): KV {
     )
   )
 }
-
-let defaultInstance: KV | undefined
 
 export function getDefaultKV(): KV {
   defaultInstance ??= createKV()

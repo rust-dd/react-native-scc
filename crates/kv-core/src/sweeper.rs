@@ -15,13 +15,23 @@ pub(crate) struct SweeperHandle {
 }
 
 impl SweeperHandle {
-    pub(crate) fn stop(&self) {
+    pub(crate) fn signal_stop(&self) {
         self.shutdown.store(true, Ordering::Release);
+        if let Some(handle) = self.handle.lock().unwrap().as_ref() {
+            handle.thread().unpark();
+        }
+    }
+
+    pub(crate) fn join(&self) {
         let handle = self.handle.lock().unwrap().take();
         if let Some(handle) = handle {
-            handle.thread().unpark();
             let _ = handle.join();
         }
+    }
+
+    pub(crate) fn stop(&self) {
+        self.signal_stop();
+        self.join();
     }
 }
 
@@ -38,6 +48,8 @@ pub(crate) fn spawn(
     listeners: Arc<Listeners>,
     max_entries: Option<usize>,
     sweep_interval: Duration,
+    mutation_gate: Arc<Mutex<()>>,
+    closed: Arc<AtomicBool>,
 ) -> SweeperHandle {
     let shutdown = Arc::new(AtomicBool::new(false));
     let stop = shutdown.clone();
@@ -49,20 +61,29 @@ pub(crate) fn spawn(
             }
             let now = crate::now_ms();
             let (expired, evicted) = crate::compute_doomed(&map, now, max_entries);
-            for key in expired {
-                // Re-check under the entry lock: the key may have been
-                // rewritten with a live value since the scan judged it expired.
-                if map
-                    .remove_if_sync(&key, |slot| slot.is_expired(now))
-                    .is_some()
-                {
-                    listeners.notify(Some(&key));
+            let mut removed = Vec::new();
+            {
+                let _mutation = mutation_gate.lock().unwrap();
+                if stop.load(Ordering::Acquire) || closed.load(Ordering::Acquire) {
+                    break;
+                }
+                for key in expired {
+                    // The entry may have been rewritten after the scan.
+                    if map
+                        .remove_if_sync(&key, |slot| slot.is_expired(now))
+                        .is_some()
+                    {
+                        removed.push(key);
+                    }
+                }
+                for key in evicted {
+                    if map.remove_sync(&key).is_some() {
+                        removed.push(key);
+                    }
                 }
             }
-            for key in evicted {
-                if map.remove_sync(&key).is_some() {
-                    listeners.notify(Some(&key));
-                }
+            for key in removed {
+                listeners.notify(Some(&key));
             }
         }
     });

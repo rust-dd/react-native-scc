@@ -8,7 +8,7 @@ pub(crate) fn vec_to_raw(v: Vec<u8>) -> (*mut u8, usize) {
     (Box::into_raw(boxed) as *mut u8, len)
 }
 
-/// Frees a buffer returned by `scc_kv_get` / `scc_kv_keys`.
+/// Frees a buffer returned by `scc_kv_get`, `scc_kv_get_many_str`, or `scc_kv_keys`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn scc_kv_free(ptr: *mut u8, len: usize) {
     if !ptr.is_null() && len > 0 {

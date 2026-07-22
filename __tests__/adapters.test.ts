@@ -48,6 +48,10 @@ test('jotai atomWithKV persists and reacts to external writes', async () => {
   await flushMicrotasks()
   expect(store.get(counterAtom)).toBe(9)
   unsub()
+
+  other.setJSON('counter', 11)
+  await flushMicrotasks()
+  expect(store.get(counterAtom)).toBe(9)
 })
 
 test('redux-persist engine contract', async () => {
@@ -57,4 +61,40 @@ test('redux-persist engine contract', async () => {
   await expect(engine.getItem('persist:root')).resolves.toBe('{"x":"1"}')
   await engine.removeItem('persist:root')
   await expect(engine.getItem('persist:root')).resolves.toBeNull()
+})
+
+test('redux-persist engine turns native failures into rejected promises', async () => {
+  const kv = createKV({ id: 'redux-errors' })
+  const engine = createSccStorage(kv)
+  const error = new Error('native failure')
+
+  const getSpy = jest.spyOn(kv, 'getString').mockImplementation(() => {
+    throw error
+  })
+  let getPromise: Promise<string | null> | undefined
+  expect(() => {
+    getPromise = engine.getItem('key')
+  }).not.toThrow()
+  await expect(getPromise).rejects.toBe(error)
+  getSpy.mockRestore()
+
+  const setSpy = jest.spyOn(kv, 'set').mockImplementation(() => {
+    throw error
+  })
+  let setPromise: Promise<void> | undefined
+  expect(() => {
+    setPromise = engine.setItem('key', 'value')
+  }).not.toThrow()
+  await expect(setPromise).rejects.toBe(error)
+  setSpy.mockRestore()
+
+  const deleteSpy = jest.spyOn(kv, 'delete').mockImplementation(() => {
+    throw error
+  })
+  let deletePromise: Promise<void> | undefined
+  expect(() => {
+    deletePromise = engine.removeItem('key')
+  }).not.toThrow()
+  await expect(deletePromise).rejects.toBe(error)
+  deleteSpy.mockRestore()
 })

@@ -1,4 +1,4 @@
-const { withDangerousMod, withPlugins } = require('@expo/config-plugins')
+const { withDangerousMod, withPlugins } = require('expo/config-plugins')
 const path = require('path')
 const fs = require('fs')
 

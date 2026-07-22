@@ -1,15 +1,22 @@
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::Duration;
 
 use crate::crypto::Cipher;
 use crate::error::{Error, Result};
 use crate::notify::Listeners;
-use crate::record::{self, DecodeOutcome, Op};
 use crate::snapshot;
 use crate::value::Value;
 use crate::wal::{Durability, WalHandle, WriterConfig};
+
+mod mutation;
+mod recovery;
+
+use recovery::replay_wal;
+
+const MUTATION_CLOSED: usize = 1usize << (usize::BITS - 1);
+const MUTATION_COUNT_MASK: usize = MUTATION_CLOSED - 1;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenOptions {
@@ -49,44 +56,75 @@ pub enum BatchOp {
 pub struct Store {
     map: Arc<crate::ValueMap>,
     listeners: Arc<Listeners>,
-    closed: AtomicBool,
+    closed: Arc<AtomicBool>,
     wal: Option<WalHandle>,
     sweeper: Option<crate::sweeper::SweeperHandle>,
     /// Read side of the compaction gate: multi-op batches hold it across map
     /// application + WAL append so the writer's compact() (write side) can
     /// never snapshot a half-applied batch and truncate its record away.
     compact_gate: Arc<RwLock<()>>,
+    mutation_gate: Option<Arc<Mutex<()>>>,
+    ungated_mutations: AtomicUsize,
+    close_gate: Mutex<()>,
+}
+
+struct MutationGuard<'a> {
+    _gate: Option<MutexGuard<'a, ()>>,
+    ungated_mutations: Option<&'a AtomicUsize>,
+}
+
+impl Drop for MutationGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(ungated_mutations) = self.ungated_mutations {
+            let previous = ungated_mutations.fetch_sub(1, Ordering::Release);
+            debug_assert_ne!(previous & MUTATION_COUNT_MASK, 0);
+        }
+    }
 }
 
 impl Store {
+    /// Creates a store whose mutations rely on the map's sharded locking.
+    /// Closing waits for admitted mutations without serializing normal writes.
     pub fn in_memory() -> Arc<Store> {
+        let closed = Arc::new(AtomicBool::new(false));
         Arc::new(Store {
             map: Arc::new(crate::new_value_map()),
             listeners: Arc::new(Listeners::new()),
-            closed: AtomicBool::new(false),
+            closed,
             wal: None,
             sweeper: None,
             compact_gate: Arc::new(RwLock::new(())),
+            mutation_gate: None,
+            ungated_mutations: AtomicUsize::new(0),
+            close_gate: Mutex::new(()),
         })
     }
 
     /// In-memory store with a background sweeper thread that reclaims expired
     /// keys and, when `max_entries` is set, evicts down to fit.
-    pub fn in_memory_evicting(
-        max_entries: Option<usize>,
-        sweep_interval: Duration,
-    ) -> Arc<Store> {
+    pub fn in_memory_evicting(max_entries: Option<usize>, sweep_interval: Duration) -> Arc<Store> {
         let map = Arc::new(crate::new_value_map());
         let listeners = Arc::new(Listeners::new());
-        let sweeper =
-            crate::sweeper::spawn(map.clone(), listeners.clone(), max_entries, sweep_interval);
+        let closed = Arc::new(AtomicBool::new(false));
+        let mutation_gate = Arc::new(Mutex::new(()));
+        let sweeper = crate::sweeper::spawn(
+            map.clone(),
+            listeners.clone(),
+            max_entries,
+            sweep_interval,
+            mutation_gate.clone(),
+            closed.clone(),
+        );
         Arc::new(Store {
             map,
             listeners,
-            closed: AtomicBool::new(false),
+            closed,
             wal: None,
             sweeper: Some(sweeper),
             compact_gate: Arc::new(RwLock::new(())),
+            mutation_gate: Some(mutation_gate),
+            ungated_mutations: AtomicUsize::new(0),
+            close_gate: Mutex::new(()),
         })
     }
 
@@ -117,6 +155,8 @@ impl Store {
         let listeners = Arc::new(Listeners::new());
         let map = Arc::new(crate::new_value_map());
         let compact_gate = Arc::new(RwLock::new(()));
+        let mutation_gate = Arc::new(Mutex::new(()));
+        let closed = Arc::new(AtomicBool::new(false));
         let snap_len = snapshot::load(&snap_path, &map, cipher.as_deref())?;
         let wal_len = replay_wal(&wal_path, &map, cipher.as_deref())?;
         let wal = WalHandle::spawn(
@@ -133,6 +173,8 @@ impl Store {
                 sweep_interval: opts.ttl_sweep_interval,
                 max_entries: opts.max_entries,
                 compact_gate: compact_gate.clone(),
+                mutation_gate: mutation_gate.clone(),
+                closed: closed.clone(),
             },
             map.clone(),
             wal_len,
@@ -141,10 +183,13 @@ impl Store {
         Ok(Arc::new(Store {
             map,
             listeners,
-            closed: AtomicBool::new(false),
+            closed,
             wal: Some(wal),
             sweeper: None,
             compact_gate,
+            mutation_gate: Some(mutation_gate),
+            ungated_mutations: AtomicUsize::new(0),
+            close_gate: Mutex::new(()),
         }))
     }
 
@@ -155,156 +200,26 @@ impl Store {
         Ok(())
     }
 
-    pub fn set(&self, key: &str, value: Value) -> Result<()> {
-        self.ensure_open()?;
-        let op = Op::Set { key, value: &value };
-        record::validate(&op)?;
-        let rec = match &self.wal {
-            Some(wal) => {
-                wal.check()?;
-                let hint = match &value {
-                    Value::Str(s) | Value::Json(s) => s.len(),
-                    Value::Bytes(b) => b.len(),
-                    Value::Num(_) => 8,
-                    Value::Bool(_) => 1,
-                };
-                let mut buf = wal.take_buffer(14 + key.len() + hint);
-                record::encode(&op, &mut buf);
-                Some(buf)
-            }
-            None => None,
-        };
-        apply_set(&self.map, key, value, 0);
-        if let (Some(wal), Some(rec)) = (&self.wal, rec) {
-            wal.append(rec)?;
+    fn begin_mutation(&self) -> Result<MutationGuard<'_>> {
+        if let Some(gate) = &self.mutation_gate {
+            let guard = gate.lock().unwrap();
+            self.ensure_open()?;
+            return Ok(MutationGuard {
+                _gate: Some(guard),
+                ungated_mutations: None,
+            });
         }
-        self.listeners.notify(Some(key));
-        Ok(())
-    }
 
-    /// Like `set`, but the key expires `ttl_ms` from now. Expired keys read
-    /// as missing immediately; the background sweeper reclaims them.
-    pub fn set_with_ttl(&self, key: &str, value: Value, ttl_ms: u64) -> Result<()> {
-        self.ensure_open()?;
-        let expires_at_ms = crate::now_ms().saturating_add(ttl_ms);
-        let op = Op::SetTtl {
-            key,
-            value: &value,
-            expires_at_ms,
-        };
-        record::validate(&op)?;
-        let rec = match &self.wal {
-            Some(wal) => {
-                wal.check()?;
-                let mut buf = wal.take_buffer(30 + key.len());
-                record::encode(&op, &mut buf);
-                Some(buf)
-            }
-            None => None,
-        };
-        apply_set(&self.map, key, value, expires_at_ms);
-        if let (Some(wal), Some(rec)) = (&self.wal, rec) {
-            wal.append(rec)?;
+        let previous = self.ungated_mutations.fetch_add(1, Ordering::AcqRel);
+        if previous & MUTATION_CLOSED != 0 {
+            self.ungated_mutations.fetch_sub(1, Ordering::Release);
+            return Err(Error::Closed);
         }
-        self.listeners.notify(Some(key));
-        Ok(())
-    }
-
-    /// Batch write: all records land in one WAL append (a single channel
-    /// send), listeners fire per key. Values are applied in iteration order.
-    pub fn set_many<'a>(&self, entries: impl Iterator<Item = (&'a str, Value)>) -> Result<()> {
-        self.ensure_open()?;
-        let entries: Vec<_> = entries.collect();
-        for (key, value) in &entries {
-            record::validate(&Op::Set { key, value })?;
-        }
-        let collect_keys = self.listeners.is_active();
-        let mut notify_keys: Vec<compact_str::CompactString> = Vec::new();
-        match &self.wal {
-            Some(wal) => {
-                wal.check()?;
-                let mut buf = wal.take_buffer(256);
-                let _gate = self.compact_gate.read().unwrap();
-                for (key, value) in entries {
-                    record::encode(&Op::Set { key, value: &value }, &mut buf);
-                    apply_set(&self.map, key, value, 0);
-                    if collect_keys {
-                        notify_keys.push(key.into());
-                    }
-                }
-                if !buf.is_empty() {
-                    wal.append(buf)?;
-                }
-            }
-            None => {
-                for (key, value) in entries {
-                    apply_set(&self.map, key, value, 0);
-                    if collect_keys {
-                        notify_keys.push(key.into());
-                    }
-                }
-            }
-        }
-        for key in &notify_keys {
-            self.listeners.notify(Some(key));
-        }
-        Ok(())
-    }
-
-    /// Applies `ops` as one crash-atomic unit: a single WAL record, so replay
-    /// sees all of it or none. Listeners fire per changed key. If the WAL
-    /// append fails, the in-process map may already reflect the batch even
-    /// though it will not survive a restart — the error signals that the
-    /// store's durable state has fallen behind.
-    pub fn apply_batch(&self, ops: &[BatchOp]) -> Result<()> {
-        self.ensure_open()?;
-        if ops.is_empty() {
-            return Ok(());
-        }
-        let subs: Vec<record::BatchSub> = ops
-            .iter()
-            .map(|op| match op {
-                BatchOp::Set { key, value } => record::BatchSub::Set { key, value },
-                BatchOp::Delete { key } => record::BatchSub::Delete { key },
-            })
-            .collect();
-        record::validate(&Op::Batch { ops: &subs })?;
-        let collect_keys = self.listeners.is_active();
-        let mut notify_keys: Vec<compact_str::CompactString> = Vec::new();
-        if let Some(wal) = &self.wal {
-            wal.check()?;
-            let mut buf = wal.take_buffer(256);
-            record::encode(&Op::Batch { ops: &subs }, &mut buf);
-            let _gate = self.compact_gate.read().unwrap();
-            self.apply_ops(ops, collect_keys, &mut notify_keys);
-            wal.append(buf)?;
-        } else {
-            self.apply_ops(ops, collect_keys, &mut notify_keys);
-        }
-        for key in &notify_keys {
-            self.listeners.notify(Some(key));
-        }
-        Ok(())
-    }
-
-    fn apply_ops(
-        &self,
-        ops: &[BatchOp],
-        collect: bool,
-        notify: &mut Vec<compact_str::CompactString>,
-    ) {
-        for op in ops {
-            let (key, changed) = match op {
-                BatchOp::Set { key, value } => {
-                    apply_set(&self.map, key, value.clone(), 0);
-                    (key, true)
-                }
-                BatchOp::Delete { key } => (key, self.map.remove_sync(key).is_some()),
-            };
-            if collect && changed {
-                notify.push(key.as_str().into());
-            }
-        }
+        assert_ne!(previous & MUTATION_COUNT_MASK, MUTATION_COUNT_MASK);
+        Ok(MutationGuard {
+            _gate: None,
+            ungated_mutations: Some(&self.ungated_mutations),
+        })
     }
 
     pub fn get(&self, key: &str) -> Option<Value> {
@@ -332,24 +247,6 @@ impl Store {
                 slot.expires_at_ms == 0 || crate::now_ms() < slot.expires_at_ms
             })
             .unwrap_or(false)
-    }
-
-    pub fn delete(&self, key: &str) -> Result<bool> {
-        self.ensure_open()?;
-        record::validate(&Op::Delete { key })?;
-        if let Some(wal) = &self.wal {
-            wal.check()?;
-        }
-        let existed = self.map.remove_sync(key).is_some();
-        if existed {
-            if let Some(wal) = &self.wal {
-                let mut buf = wal.take_buffer(13 + key.len());
-                record::encode(&Op::Delete { key }, &mut buf);
-                wal.append(buf)?;
-            }
-            self.listeners.notify(Some(key));
-        }
-        Ok(existed)
     }
 
     pub fn keys(&self) -> Vec<String> {
@@ -380,21 +277,6 @@ impl Store {
         self.len() == 0
     }
 
-    pub fn clear(&self) -> Result<()> {
-        self.ensure_open()?;
-        if let Some(wal) = &self.wal {
-            wal.check()?;
-        }
-        self.map.clear_sync();
-        if let Some(wal) = &self.wal {
-            let mut buf = wal.take_buffer(13);
-            record::encode(&Op::Clear, &mut buf);
-            wal.append(buf)?;
-        }
-        self.listeners.notify(None);
-        Ok(())
-    }
-
     pub fn subscribe(&self, f: impl Fn(Option<&str>) + Send + Sync + 'static) -> u64 {
         self.listeners.add(Box::new(f))
     }
@@ -411,15 +293,47 @@ impl Store {
         }
     }
 
+    /// Stops new map and WAL mutations and waits for admitted ones to finish.
+    /// Listener callbacks already dispatched by a mutation may finish later.
     pub fn close(&self) -> Result<()> {
-        if self.closed.swap(true, Ordering::AcqRel) {
-            return Ok(());
+        let _close = self.close_gate.lock().unwrap();
+        if let Some(gate) = &self.mutation_gate {
+            {
+                let _mutation = gate.lock().unwrap();
+                if self.closed.swap(true, Ordering::AcqRel) {
+                    return Ok(());
+                }
+                if let Some(sweeper) = &self.sweeper {
+                    sweeper.signal_stop();
+                }
+                if let Some(wal) = &self.wal {
+                    wal.signal_shutdown();
+                }
+            }
+        } else {
+            if self.closed.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            let previous = self
+                .ungated_mutations
+                .fetch_or(MUTATION_CLOSED, Ordering::AcqRel);
+            debug_assert_eq!(previous & MUTATION_CLOSED, 0);
+            self.closed.store(true, Ordering::Release);
+            while self.ungated_mutations.load(Ordering::Acquire) & MUTATION_COUNT_MASK != 0 {
+                std::thread::yield_now();
+            }
+            if let Some(sweeper) = &self.sweeper {
+                sweeper.signal_stop();
+            }
+            if let Some(wal) = &self.wal {
+                wal.signal_shutdown();
+            }
         }
         if let Some(sweeper) = &self.sweeper {
-            sweeper.stop();
+            sweeper.join();
         }
         if let Some(wal) = &self.wal {
-            wal.shutdown();
+            wal.join();
         }
         Ok(())
     }
@@ -436,282 +350,5 @@ impl Drop for Store {
     }
 }
 
-// Overwrite via update first: the common hot path skips allocating an owned
-// key. Only a fresh insert pays for `to_string`.
-fn apply_set(map: &crate::ValueMap, key: &str, value: Value, expires_at_ms: u64) {
-    let mut slot = Some(crate::Slot {
-        value,
-        expires_at_ms,
-    });
-    let updated = map
-        .update_sync(key, |_, existing| {
-            *existing = slot.take().expect("slot consumed twice")
-        })
-        .is_some();
-    if !updated {
-        match map.entry_sync(key.to_string()) {
-            scc::hash_map::Entry::Occupied(mut o) => {
-                *o.get_mut() = slot.take().expect("slot consumed twice")
-            }
-            scc::hash_map::Entry::Vacant(v) => {
-                v.insert_entry(slot.take().expect("slot consumed twice"));
-            }
-        }
-    }
-}
-
-fn replay_wal(path: &Path, map: &crate::ValueMap, cipher: Option<&Cipher>) -> Result<u64> {
-    use crate::crypto::{self, FileFormat, FrameOutcome};
-
-    let Some(mapped) = snapshot::map_file(path)? else {
-        return Ok(0);
-    };
-    let data: &[u8] = &mapped;
-    let (format, header_len) = crypto::parse_header(data);
-    let encrypted = match format {
-        FileFormat::Legacy => false,
-        FileFormat::V1 { encrypted } => encrypted,
-    };
-    snapshot::check_key_matches(path, encrypted, cipher)?;
-    let mut offset = header_len;
-    if let Some(cipher) = cipher {
-        let mut decrypted_any = false;
-        while offset < data.len() {
-            match cipher.decrypt_frame(&data[offset..]) {
-                FrameOutcome::Frame {
-                    plaintext,
-                    consumed,
-                } => {
-                    decrypted_any = true;
-                    let mut rec_off = 0usize;
-                    let mut ok = true;
-                    while rec_off < plaintext.len() {
-                        match record::decode(&plaintext[rec_off..]) {
-                            DecodeOutcome::Record { op, consumed } => {
-                                record::apply(map, op);
-                                rec_off += consumed;
-                            }
-                            DecodeOutcome::NeedMore | DecodeOutcome::Corrupt => {
-                                ok = false;
-                                break;
-                            }
-                        }
-                    }
-                    if !ok {
-                        break;
-                    }
-                    offset += consumed;
-                }
-                FrameOutcome::NeedMore => break,
-                FrameOutcome::Corrupt => {
-                    // An unauthenticatable FIRST frame means the key is wrong
-                    // (or the file is hostile) — refuse instead of truncating
-                    // the log away. After good frames it is a torn tail.
-                    if !decrypted_any {
-                        return Err(Error::Crypto(format!(
-                            "cannot decrypt {} — wrong encryption key?",
-                            path.display()
-                        )));
-                    }
-                    break;
-                }
-            }
-        }
-    } else {
-        while offset < data.len() {
-            match record::decode(&data[offset..]) {
-                DecodeOutcome::Record { op, consumed } => {
-                    record::apply(map, op);
-                    offset += consumed;
-                }
-                DecodeOutcome::NeedMore | DecodeOutcome::Corrupt => break,
-            }
-        }
-    }
-    let total = data.len();
-    drop(mapped);
-    if offset < total {
-        let file = std::fs::OpenOptions::new()
-            .write(true)
-            .open(path)
-            .map_err(|e| Error::Io {
-                path: path.to_path_buf(),
-                source: e,
-            })?;
-        file.set_len(offset as u64).map_err(|e| Error::Io {
-            path: path.to_path_buf(),
-            source: e,
-        })?;
-        file.sync_all().map_err(|e| Error::Io {
-            path: path.to_path_buf(),
-            source: e,
-        })?;
-    }
-    Ok(offset as u64)
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Mutex;
-
-    #[test]
-    fn set_get_typed_values() {
-        let s = Store::in_memory();
-        s.set("s", Value::Str("x".into())).unwrap();
-        s.set("n", Value::Num(1.5)).unwrap();
-        s.set("b", Value::Bool(true)).unwrap();
-        assert_eq!(s.get("s"), Some(Value::Str("x".into())));
-        assert_eq!(s.get("n"), Some(Value::Num(1.5)));
-        assert_eq!(s.get("b"), Some(Value::Bool(true)));
-        assert_eq!(s.get("missing"), None);
-        assert_eq!(s.len(), 3);
-    }
-
-    #[test]
-    fn overwrite_changes_type() {
-        let s = Store::in_memory();
-        s.set("k", Value::Num(1.0)).unwrap();
-        s.set("k", Value::Str("now a string".into())).unwrap();
-        assert_eq!(s.get("k"), Some(Value::Str("now a string".into())));
-        assert_eq!(s.len(), 1);
-    }
-
-    #[test]
-    fn delete_contains_keys_clear() {
-        let s = Store::in_memory();
-        s.set("a", Value::Bool(false)).unwrap();
-        s.set("b", Value::Num(2.0)).unwrap();
-        assert!(s.contains("a"));
-        assert!(s.delete("a").unwrap());
-        assert!(!s.delete("a").unwrap());
-        assert!(!s.contains("a"));
-        let mut keys = s.keys();
-        keys.sort();
-        assert_eq!(keys, vec!["b".to_string()]);
-        s.clear().unwrap();
-        assert!(s.is_empty());
-    }
-
-    #[test]
-    fn listeners_fire_correctly() {
-        let s = Store::in_memory();
-        let events: Arc<Mutex<Vec<Option<String>>>> = Arc::new(Mutex::new(Vec::new()));
-        let sink = events.clone();
-        let id = s.subscribe(move |key| {
-            sink.lock().unwrap().push(key.map(str::to_string));
-        });
-
-        s.set("k1", Value::Num(1.0)).unwrap();
-        s.delete("missing").unwrap();
-        s.delete("k1").unwrap();
-        s.clear().unwrap();
-        assert_eq!(
-            *events.lock().unwrap(),
-            vec![Some("k1".to_string()), Some("k1".to_string()), None]
-        );
-
-        assert!(s.unsubscribe(id));
-        assert!(!s.unsubscribe(id));
-        s.set("k2", Value::Num(2.0)).unwrap();
-        assert_eq!(events.lock().unwrap().len(), 3);
-    }
-
-    #[test]
-    fn closed_store_rejects_mutations_allows_reads() {
-        let s = Store::in_memory();
-        s.set("k", Value::Num(1.0)).unwrap();
-        s.close().unwrap();
-        assert!(matches!(s.set("k", Value::Num(2.0)), Err(Error::Closed)));
-        assert!(matches!(s.clear(), Err(Error::Closed)));
-        assert_eq!(s.get("k"), Some(Value::Num(1.0)));
-    }
-
-    fn fast_opts() -> OpenOptions {
-        OpenOptions {
-            durability: Durability::Strict,
-            group_window: Duration::from_millis(1),
-            ..OpenOptions::default()
-        }
-    }
-
-    #[test]
-    fn background_error_surfaces_on_mutation() {
-        let dir = tempfile::tempdir().unwrap();
-        let s = Store::open(dir.path(), "db", fast_opts()).unwrap();
-        s.set("k", Value::Num(1.0)).unwrap();
-        s.wal_for_test().unwrap().inject_error("io fail");
-        assert!(matches!(
-            s.set("k", Value::Num(2.0)),
-            Err(Error::Background(_))
-        ));
-        assert_eq!(s.get("k"), Some(Value::Num(1.0)));
-    }
-
-    #[test]
-    fn oversized_record_is_rejected_before_apply() {
-        let dir = tempfile::tempdir().unwrap();
-        let s = Store::open(dir.path(), "db", fast_opts()).unwrap();
-        let oversized = vec![0u8; record::MAX_PAYLOAD as usize];
-
-        assert!(s.set("huge", Value::Bytes(oversized)).is_err());
-        assert_eq!(s.get("huge"), None);
-    }
-
-    #[test]
-    fn apply_batch_applies_all_ops() {
-        let s = Store::in_memory();
-        s.set("keep", Value::Str("x".into())).unwrap();
-        s.set("drop", Value::Str("y".into())).unwrap();
-        s.apply_batch(&[
-            BatchOp::Set {
-                key: "counter".into(),
-                value: Value::Num(2.0),
-            },
-            BatchOp::Set {
-                key: "meta".into(),
-                value: Value::Json(r#"{"n":2}"#.into()),
-            },
-            BatchOp::Delete { key: "drop".into() },
-        ])
-        .unwrap();
-        assert_eq!(s.get("counter"), Some(Value::Num(2.0)));
-        assert_eq!(s.get("meta"), Some(Value::Json(r#"{"n":2}"#.into())));
-        assert_eq!(s.get("drop"), None);
-        assert_eq!(s.get("keep"), Some(Value::Str("x".into())));
-    }
-
-    #[test]
-    fn torn_batch_record_applies_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let s = Store::open(dir.path(), "tx", fast_opts()).unwrap();
-        s.set("base", Value::Num(1.0)).unwrap();
-        s.apply_batch(&[
-            BatchOp::Set {
-                key: "a".into(),
-                value: Value::Num(9.0),
-            },
-            BatchOp::Set {
-                key: "b".into(),
-                value: Value::Num(9.0),
-            },
-        ])
-        .unwrap();
-        s.close().unwrap();
-        drop(s);
-
-        let wal = dir.path().join("tx.wal");
-        let len = std::fs::metadata(&wal).unwrap().len();
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(&wal)
-            .unwrap()
-            .set_len(len - 1)
-            .unwrap();
-
-        let reopened = Store::open(dir.path(), "tx", fast_opts()).unwrap();
-        assert_eq!(reopened.get("base"), Some(Value::Num(1.0)));
-        assert_eq!(reopened.get("a"), None, "torn batch must not partially apply");
-        assert_eq!(reopened.get("b"), None);
-    }
-}
+mod tests;

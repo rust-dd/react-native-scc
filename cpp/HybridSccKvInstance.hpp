@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -209,22 +210,40 @@ public:
     if (keys.size() != values.size()) {
       throw std::runtime_error("setManyString: keys and values length mismatch");
     }
+    if (keys.empty()) return;
     size_t total = 0;
+    auto checkedAdd = [&total](size_t part) {
+      if (part > std::numeric_limits<size_t>::max() - total) {
+        throw std::runtime_error("setManyString: packed size overflow");
+      }
+      total += part;
+    };
     for (size_t i = 0; i < keys.size(); i++) {
-      total += 8 + keys[i].size() + values[i].size();
+      if (keys[i].size() > std::numeric_limits<uint32_t>::max() ||
+          values[i].size() > std::numeric_limits<uint32_t>::max()) {
+        throw std::runtime_error("setManyString: entry exceeds the wire-format limit");
+      }
+      checkedAdd(8);
+      checkedAdd(keys[i].size());
+      checkedAdd(values[i].size());
     }
-    std::vector<uint8_t> packed;
-    packed.reserve(total);
-    auto appendU32 = [&packed](uint32_t v) {
-      uint8_t le[4];
-      std::memcpy(le, &v, 4);
-      packed.insert(packed.end(), le, le + 4);
+    std::vector<uint8_t> packed(total);
+    size_t offset = 0;
+    auto appendU32 = [&packed, &offset](uint32_t value) {
+      writeU32Le(packed.data() + offset, value);
+      offset += 4;
     };
     for (size_t i = 0; i < keys.size(); i++) {
       appendU32(static_cast<uint32_t>(keys[i].size()));
-      packed.insert(packed.end(), kptr(keys[i]), kptr(keys[i]) + keys[i].size());
+      if (!keys[i].empty()) {
+        std::memcpy(packed.data() + offset, keys[i].data(), keys[i].size());
+        offset += keys[i].size();
+      }
       appendU32(static_cast<uint32_t>(values[i].size()));
-      packed.insert(packed.end(), kptr(values[i]), kptr(values[i]) + values[i].size());
+      if (!values[i].empty()) {
+        std::memcpy(packed.data() + offset, values[i].data(), values[i].size());
+        offset += values[i].size();
+      }
     }
     if (scc_kv_set_many_str(_handle, packed.data(), packed.size(), keys.size()) != 0) {
       throwLastError("setMany");
@@ -233,15 +252,65 @@ public:
 
   std::vector<std::variant<nitro::NullType, std::string>>
   getManyString(const std::vector<std::string>& keys) override {
+    if (keys.empty()) return {};
+    size_t packedSize = 0;
+    for (const auto& key : keys) {
+      if (key.size() > std::numeric_limits<uint32_t>::max()) {
+        throw std::runtime_error("getManyString: key exceeds the wire-format limit");
+      }
+      if (packedSize > std::numeric_limits<size_t>::max() - 4 ||
+          key.size() > std::numeric_limits<size_t>::max() - packedSize - 4) {
+        throw std::runtime_error("getManyString: packed size overflow");
+      }
+      packedSize += 4 + key.size();
+    }
+
+    std::vector<uint8_t> packed(packedSize);
+    size_t packedOffset = 0;
+    for (const auto& key : keys) {
+      writeU32Le(packed.data() + packedOffset, static_cast<uint32_t>(key.size()));
+      packedOffset += 4;
+      if (!key.empty()) {
+        std::memcpy(packed.data() + packedOffset, key.data(), key.size());
+        packedOffset += key.size();
+      }
+    }
+
+    struct RustBuffer {
+      uint8_t* data = nullptr;
+      size_t len = 0;
+      ~RustBuffer() { scc_kv_free(data, len); }
+    } result;
+    if (scc_kv_get_many_str(_handle, packed.data(), packed.size(), keys.size(),
+                            &result.data, &result.len) != 0) {
+      throwLastError("getMany");
+    }
+    if (result.data == nullptr) {
+      throw std::runtime_error("getMany failed: malformed packed output");
+    }
+
     std::vector<std::variant<nitro::NullType, std::string>> out;
     out.reserve(keys.size());
-    for (const auto& key : keys) {
-      auto value = getStringLike(key, 0);
-      if (value.has_value()) {
-        out.emplace_back(std::move(*value));
-      } else {
-        out.emplace_back(nitro::NullType{});
+    size_t offset = 0;
+    for (size_t i = 0; i < keys.size(); i++) {
+      if (offset > result.len || result.len - offset < 4) {
+        throw std::runtime_error("getMany failed: malformed packed output");
       }
+      uint32_t valueLen = readU32Le(result.data + offset);
+      offset += 4;
+      if (valueLen == std::numeric_limits<uint32_t>::max()) {
+        out.emplace_back(nitro::NullType{});
+        continue;
+      }
+      if (static_cast<size_t>(valueLen) > result.len - offset) {
+        throw std::runtime_error("getMany failed: malformed packed output");
+      }
+      out.emplace_back(
+          std::string(reinterpret_cast<const char*>(result.data + offset), valueLen));
+      offset += valueLen;
+    }
+    if (offset != result.len) {
+      throw std::runtime_error("getMany failed: malformed packed output");
     }
     return out;
   }
@@ -375,6 +444,20 @@ private:
     return reinterpret_cast<const uint8_t*>(s.data());
   }
 
+  static void writeU32Le(uint8_t* out, uint32_t value) {
+    out[0] = static_cast<uint8_t>(value);
+    out[1] = static_cast<uint8_t>(value >> 8);
+    out[2] = static_cast<uint8_t>(value >> 16);
+    out[3] = static_cast<uint8_t>(value >> 24);
+  }
+
+  static uint32_t readU32Le(const uint8_t* data) {
+    return static_cast<uint32_t>(data[0]) |
+           (static_cast<uint32_t>(data[1]) << 8) |
+           (static_cast<uint32_t>(data[2]) << 16) |
+           (static_cast<uint32_t>(data[3]) << 24);
+  }
+
   [[noreturn]] static void throwLastError(const char* op) {
     char* err = scc_kv_last_error();
     std::string msg = err != nullptr ? err : "unknown error";
@@ -399,34 +482,30 @@ private:
     }
   }
 
-  std::optional<std::vector<uint8_t>> getRaw(const std::string& key, uint8_t expectedTag) {
-    uint8_t tag = 0;
-    uint8_t* data = nullptr;
-    size_t len = 0;
-    int rc = scc_kv_get(_handle, kptr(key), key.size(), &tag, &data, &len);
-    if (rc < 0) throwLastError("get");
-    if (rc == 0) return std::nullopt;
-    std::vector<uint8_t> out(data, data + len);
-    scc_kv_free(data, len);
-    if (tag != expectedTag) return std::nullopt;
-    return out;
-  }
-
-  // Thread-local scratch (grows on demand, starts at 4 KiB) keeps the common
-  // case at a single map lookup; the value can change between a size probe
-  // and the retry, so oversized values loop until a fetch fits.
+  // Retaining a rare multi-megabyte read on every Nitro worker would inflate
+  // process memory indefinitely, so only modest scratch buffers stay cached.
   std::optional<std::string> getStringLike(const std::string& key, uint8_t tag) {
-    static thread_local std::vector<uint8_t> scratch(4096);
+    constexpr size_t initialCapacity = 4096;
+    constexpr size_t maxRetainedCapacity = 256 * 1024;
+    static thread_local std::vector<uint8_t> scratch(initialCapacity);
+    std::vector<uint8_t> oversized;
+    std::vector<uint8_t>* buffer = &scratch;
     while (true) {
       size_t needed = 0;
-      int rc = scc_kv_get_raw(_handle, kptr(key), key.size(), tag, scratch.data(),
-                              scratch.size(), &needed);
+      int rc = scc_kv_get_raw(_handle, kptr(key), key.size(), tag, buffer->data(),
+                              buffer->size(), &needed);
       if (rc < 0) throwLastError("get");
       if (rc == 0) return std::nullopt;
-      if (needed <= scratch.size()) {
-        return std::string(reinterpret_cast<const char*>(scratch.data()), needed);
+      if (needed <= buffer->size()) {
+        return std::string(reinterpret_cast<const char*>(buffer->data()), needed);
       }
-      scratch.resize(needed);
+      if (needed <= maxRetainedCapacity) {
+        scratch.resize(needed);
+        buffer = &scratch;
+      } else {
+        oversized.resize(needed);
+        buffer = &oversized;
+      }
     }
   }
 };

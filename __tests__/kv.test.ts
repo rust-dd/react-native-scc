@@ -4,7 +4,7 @@ jest.mock(
 )
 
 import { resetStores } from './mockNitro'
-import { createKV } from '../src/kv'
+import { createKV, getDefaultKV } from '../src/kv'
 
 const flushMicrotasks = () =>
   new Promise<void>((resolve) => setTimeout(resolve, 0))
@@ -36,6 +36,34 @@ test('batch setMany/getMany round-trips with null for missing', async () => {
   expect(kv.getMany(['a', 'missing', 'c'])).toEqual(['1', undefined, '3'])
   await kv.setManyAsync({ d: '4' })
   await expect(kv.getManyAsync(['d', 'a'])).resolves.toEqual(['4', '1'])
+})
+
+test('empty batches avoid native calls', async () => {
+  const kv = createKV({ id: 'empty-batch' })
+  const native = (
+    kv as unknown as {
+      native: {
+        setManyString(): void
+        getManyString(): Array<string | null>
+        setManyStringAsync(): Promise<void>
+        getManyStringAsync(): Promise<Array<string | null>>
+      }
+    }
+  ).native
+  const setSpy = jest.spyOn(native, 'setManyString')
+  const getSpy = jest.spyOn(native, 'getManyString')
+  const setAsyncSpy = jest.spyOn(native, 'setManyStringAsync')
+  const getAsyncSpy = jest.spyOn(native, 'getManyStringAsync')
+
+  kv.setMany({})
+  expect(kv.getMany([])).toEqual([])
+  await kv.setManyAsync({})
+  await expect(kv.getManyAsync([])).resolves.toEqual([])
+
+  expect(setSpy).not.toHaveBeenCalled()
+  expect(getSpy).not.toHaveBeenCalled()
+  expect(setAsyncSpy).not.toHaveBeenCalled()
+  expect(getAsyncSpy).not.toHaveBeenCalled()
 })
 
 test('transaction stages reads and writes atomically', () => {
@@ -146,6 +174,27 @@ test('transaction copies staged buffers', () => {
   expect(new Uint8Array(kv.getBuffer('b')!)[0]).toBe(1)
 })
 
+test('JSON writes reject values without a JSON representation', async () => {
+  const kv = createKV({ id: 'invalid-json' })
+  const native = (
+    kv as unknown as { native: { applyBatch(packed: ArrayBuffer): void } }
+  ).native
+  const batchSpy = jest.spyOn(native, 'applyBatch')
+
+  for (const value of [undefined, () => undefined, Symbol('value')]) {
+    expect(() => kv.setJSON('sync', value)).toThrow(/JSON-serializable/)
+    await expect(kv.setJSONAsync('async', value)).rejects.toThrow(
+      /JSON-serializable/
+    )
+    expect(() =>
+      kv.transaction((tx) => tx.setJSON('transaction', value))
+    ).toThrow(/JSON-serializable/)
+  }
+
+  expect(batchSpy).not.toHaveBeenCalled()
+  expect(kv.getAllKeys()).toEqual([])
+})
+
 test('createKV validates eviction options for in-memory stores', () => {
   expect(() =>
     createKV({ id: 'evbad', persistence: 'none', maxEntries: -1 })
@@ -174,6 +223,76 @@ test('namespace scopes keys and prefix operations', () => {
   expect(kv.getString('user:2:name')).toBe('Grace')
 })
 
+test('namespaced prefix deletion uses one atomic native batch', () => {
+  const kv = createKV({ id: 'prefix-batch' })
+  const namespace = kv.namespace('user')
+  namespace.set('cache:a', 'a')
+  namespace.set('cache:b', 'b')
+  namespace.set('keep', 'keep')
+  kv.set('other:cache:a', 'other')
+  const native = (
+    kv as unknown as {
+      native: {
+        applyBatch(packed: ArrayBuffer): void
+        remove(key: string): boolean
+      }
+    }
+  ).native
+  const batchSpy = jest.spyOn(native, 'applyBatch')
+  const removeSpy = jest.spyOn(native, 'remove')
+
+  expect(namespace.deleteByPrefix('cache:')).toBe(2)
+
+  expect(batchSpy).toHaveBeenCalledTimes(1)
+  expect(removeSpy).not.toHaveBeenCalled()
+  expect(namespace.getAllKeys()).toEqual(['keep'])
+  expect(kv.getString('other:cache:a')).toBe('other')
+
+  batchSpy.mockClear()
+  expect(namespace.clearAll()).toBe(1)
+  expect(batchSpy).toHaveBeenCalledTimes(1)
+  expect(removeSpy).not.toHaveBeenCalled()
+  expect(namespace.getAllKeys()).toEqual([])
+  expect(kv.getString('other:cache:a')).toBe('other')
+
+  batchSpy.mockClear()
+  expect(namespace.deleteByPrefix('missing:')).toBe(0)
+  expect(batchSpy).not.toHaveBeenCalled()
+})
+
+test('namespaced async key operations stay on native async paths', async () => {
+  const kv = createKV({ id: 'namespace-async' })
+  const namespace = kv.namespace('scope')
+  namespace.set('a', 'a')
+  namespace.set('b', 'b')
+  kv.set('outside', 'outside')
+  const native = (
+    kv as unknown as {
+      native: {
+        getAllKeys(): string[]
+        getAllKeysAsync(): Promise<string[]>
+        remove(key: string): boolean
+        removeAsync(key: string): Promise<boolean>
+      }
+    }
+  ).native
+  const getSyncSpy = jest.spyOn(native, 'getAllKeys')
+  const getAsyncSpy = jest.spyOn(native, 'getAllKeysAsync')
+  const removeSyncSpy = jest.spyOn(native, 'remove')
+  const removeAsyncSpy = jest.spyOn(native, 'removeAsync')
+
+  await expect(namespace.getAllKeysAsync()).resolves.toEqual(['a', 'b'])
+  expect(getAsyncSpy).toHaveBeenCalledTimes(1)
+  expect(getSyncSpy).not.toHaveBeenCalled()
+
+  await namespace.clearAllAsync()
+  expect(getAsyncSpy).toHaveBeenCalledTimes(2)
+  expect(removeAsyncSpy).toHaveBeenCalledTimes(2)
+  expect(removeSyncSpy).not.toHaveBeenCalled()
+  expect(namespace.getAllKeys()).toEqual([])
+  expect(kv.getString('outside')).toBe('outside')
+})
+
 test('observeJSON emits selected changes only', async () => {
   const kv = createKV({ id: 'observe' })
   kv.setJSON('settings', { theme: 'dark', volume: 1 })
@@ -193,6 +312,25 @@ test('observeJSON emits selected changes only', async () => {
   await flushMicrotasks()
 
   expect(events).toEqual(['dark', 'light'])
+})
+
+test('observeJSON captures a write made by its initial listener', async () => {
+  const kv = createKV({ id: 'observe-initial-write' })
+  kv.setJSON('value', 1)
+  const events: number[] = []
+
+  const sub = kv.observeJSON<number, number | undefined>(
+    'value',
+    (value) => value,
+    (value) => {
+      if (value !== undefined) events.push(value)
+      if (value === 1) kv.setJSON('value', 2)
+    }
+  )
+  await flushMicrotasks()
+  sub.remove()
+
+  expect(events).toEqual([1, 2])
 })
 
 test('ttl option expires values', async () => {
@@ -241,4 +379,62 @@ test('listener fires for cross-handle writes and clearAll', async () => {
   b.set('after', 2)
   await flushMicrotasks()
   expect(events).toHaveLength(2)
+})
+
+test('duplicate listener registrations have independent subscriptions', async () => {
+  const kv = createKV({ id: 'duplicate-listener' })
+  const listener = jest.fn()
+  const first = kv.addOnValueChangedListener(listener)
+  const second = kv.addOnValueChangedListener(listener)
+
+  first.remove()
+  kv.set('key', 1)
+  await flushMicrotasks()
+  expect(listener).toHaveBeenCalledTimes(1)
+
+  second.remove()
+  kv.set('key', 2)
+  await flushMicrotasks()
+  expect(listener).toHaveBeenCalledTimes(1)
+})
+
+test('namespace cannot close its parent store', () => {
+  const kv = createKV({ id: 'namespace-close' })
+  const namespace = kv.namespace('scope')
+  const native = (kv as unknown as { native: { close(): void } }).native
+  const closeSpy = jest.spyOn(native, 'close')
+
+  expect(() => namespace.close()).toThrow(/namespace/)
+  expect(closeSpy).not.toHaveBeenCalled()
+  expect(() => kv.set('still-open', true)).not.toThrow()
+})
+
+test('root close removes its native listener and is idempotent', () => {
+  const kv = createKV({ id: 'root-close' })
+  const native = (
+    kv as unknown as {
+      native: { close(): void; removeListener(id: number): boolean }
+    }
+  ).native
+  const closeSpy = jest.spyOn(native, 'close')
+  const removeListenerSpy = jest.spyOn(native, 'removeListener')
+  kv.addOnValueChangedListener(() => {})
+
+  kv.close()
+  kv.close()
+
+  expect(removeListenerSpy).toHaveBeenCalledTimes(1)
+  expect(closeSpy).toHaveBeenCalledTimes(1)
+  expect(() => kv.addOnValueChangedListener(() => {})).toThrow(/closed/)
+})
+
+test('closing the default store allows a fresh default instance', () => {
+  const first = getDefaultKV()
+  first.set('persisted', 'value')
+  first.close()
+
+  const reopened = getDefaultKV()
+  expect(reopened).not.toBe(first)
+  expect(reopened.getString('persisted')).toBe('value')
+  reopened.close()
 })

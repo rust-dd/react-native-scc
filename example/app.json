@@ -3,14 +3,12 @@
     "name": "scc-example",
     "slug": "scc-example",
     "version": "1.0.0",
+    "platforms": ["ios", "android"],
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
-    "newArchEnabled": true,
+    "userInterfaceStyle": "automatic",
     "scheme": "sccexample",
-    "plugins": [
-      "react-native-scc-storage"
-    ],
+    "plugins": ["expo-system-ui", "react-native-scc-storage"],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.rustdd.scckv.example"
@@ -22,11 +20,7 @@
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
-      },
-      "predictiveBackGestureEnabled": false
-    },
-    "web": {
-      "favicon": "./assets/favicon.png"
+      }
     }
   }
 }

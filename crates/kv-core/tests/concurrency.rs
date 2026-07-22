@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Barrier};
 use std::time::Duration;
 
 use kv_core::{OpenOptions, Store, Value};
@@ -82,6 +82,57 @@ fn concurrent_writers_readers_and_compaction() {
                 "wrong persisted value t{t}_k{k}"
             );
         }
+    }
+    reopened.close().unwrap();
+}
+
+#[test]
+fn concurrent_same_key_writes_match_recovered_state() {
+    const WRITERS: usize = 8;
+    const ROUNDS: usize = 256;
+
+    let dir = tempfile::tempdir().unwrap();
+    let opts = OpenOptions {
+        compact_min: u64::MAX,
+        group_window: Duration::from_millis(1),
+        ..OpenOptions::default()
+    };
+    let store = Store::open(dir.path(), "same_key", opts.clone()).unwrap();
+    let barrier = Arc::new(Barrier::new(WRITERS + 1));
+    let writers = (0..WRITERS)
+        .map(|writer| {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                for round in 0..ROUNDS {
+                    barrier.wait();
+                    store
+                        .set(
+                            &format!("round_{round}"),
+                            Value::Num((round * WRITERS + writer) as f64),
+                        )
+                        .unwrap();
+                    barrier.wait();
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut expected = Vec::with_capacity(ROUNDS);
+    for round in 0..ROUNDS {
+        barrier.wait();
+        barrier.wait();
+        expected.push(store.get(&format!("round_{round}")).unwrap());
+    }
+    for writer in writers {
+        writer.join().unwrap();
+    }
+    store.flush().unwrap();
+    store.close().unwrap();
+
+    let reopened = Store::open(dir.path(), "same_key", opts).unwrap();
+    for (round, value) in expected.into_iter().enumerate() {
+        assert_eq!(reopened.get(&format!("round_{round}")), Some(value));
     }
     reopened.close().unwrap();
 }

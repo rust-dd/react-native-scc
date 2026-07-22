@@ -4,6 +4,7 @@ export type KVChangeListener = (key: string | null) => void;
 export interface KVSubscription {
     remove(): void;
 }
+export declare const INTERNAL_GET_JSON_TEXT: unique symbol;
 export interface KVTransaction {
     set(key: string, value: KVValue): void;
     setJSON(key: string, value: unknown): void;
@@ -16,11 +17,13 @@ export interface KVTransaction {
     delete(key: string): void;
 }
 export declare class KV {
+    private readonly ownsNative;
     private readonly native;
     private readonly listeners;
     private nativeSubscription;
     private readonly keyPrefix;
-    constructor(native: SccKvInstance, keyPrefix?: string);
+    private closed;
+    constructor(native: SccKvInstance, keyPrefix?: string, ownsNative?: boolean);
     /**
      * Fires after every mutation of the underlying store — including writes
      * made through other KV objects opened with the same id. `key` is null
@@ -38,6 +41,7 @@ export declare class KV {
     transaction<T>(callback: (tx: KVTransaction) => T): T;
     namespace(prefix: string): KV;
     getKeysByPrefix(prefix: string): string[];
+    /** Deletes the keys in the matching snapshot as one native atomic batch. */
     deleteByPrefix(prefix: string): number;
     observeJSON<T = unknown, S = T | undefined>(key: string, selector: (value: T | undefined) => S, listener: (selected: S) => void, equals?: (a: S, b: S) => boolean): KVSubscription;
     set(key: string, value: KVValue, options?: SetOptions): void;
@@ -47,6 +51,7 @@ export declare class KV {
     getBoolean(key: string): boolean | undefined;
     getBuffer(key: string): ArrayBuffer | undefined;
     getJSON<T = unknown>(key: string): T | undefined;
+    [INTERNAL_GET_JSON_TEXT](key: string): string | undefined;
     contains(key: string): boolean;
     delete(key: string): boolean;
     getAllKeys(): string[];
@@ -57,6 +62,10 @@ export declare class KV {
     /** Batch string read; missing keys come back as undefined. */
     getMany(keys: string[]): (string | undefined)[];
     get size(): number;
+    /**
+     * Closes this root store and releases its native change listener. Namespace
+     * views are non-owning and must be discarded instead of closed.
+     */
     close(): void;
     setAsync(key: string, value: KVValue): Promise<void>;
     setJSONAsync(key: string, value: unknown): Promise<void>;
@@ -73,6 +82,8 @@ export declare class KV {
     setManyAsync(entries: Record<string, string>): Promise<void>;
     getManyAsync(keys: string[]): Promise<(string | undefined)[]>;
     private fullKey;
+    private fullKeys;
+    private getFullKeysByPrefixAsync;
     private toLocalChangedKey;
 }
 export declare function createKV(options?: KVOptions): KV;

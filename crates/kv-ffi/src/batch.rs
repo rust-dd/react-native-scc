@@ -1,8 +1,67 @@
 use kv_core::Value;
 
+pub(crate) struct PackedKeys<'a> {
+    data: &'a [u8],
+    off: usize,
+    remaining: usize,
+}
+
+impl<'a> PackedKeys<'a> {
+    /// Validates `count` packed `[u32 key_len][key]` entries before lookups begin.
+    pub(crate) fn validate(data: &'a [u8], count: usize) -> Result<PackedKeys<'a>, String> {
+        let mut off = 0usize;
+        let mut seen = 0usize;
+        while off < data.len() {
+            let key_len = read_u32(data, &mut off)? as usize;
+            let key_end = advance(data, off, key_len, "key")?;
+            std::str::from_utf8(&data[off..key_end])
+                .map_err(|_| "key is not valid UTF-8".to_string())?;
+            off = key_end;
+            seen = seen
+                .checked_add(1)
+                .ok_or_else(|| "key count overflow".to_string())?;
+        }
+        if seen != count {
+            return Err(format!(
+                "key count mismatch: found {seen}, expected {count}"
+            ));
+        }
+        Ok(PackedKeys {
+            data,
+            off: 0,
+            remaining: count,
+        })
+    }
+}
+
+impl<'a> Iterator for PackedKeys<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let key_len =
+            u32::from_le_bytes(self.data[self.off..self.off + 4].try_into().unwrap()) as usize;
+        self.off += 4;
+        let key_bytes = &self.data[self.off..self.off + key_len];
+        self.off += key_len;
+        self.remaining -= 1;
+        // SAFETY: `validate` checked this exact slice before constructing the iterator.
+        Some(unsafe { std::str::from_utf8_unchecked(key_bytes) })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl ExactSizeIterator for PackedKeys<'_> {}
+
 pub(crate) struct PackedEntries<'a> {
     data: &'a [u8],
     off: usize,
+    remaining: usize,
 }
 
 impl<'a> PackedEntries<'a> {
@@ -13,9 +72,15 @@ impl<'a> PackedEntries<'a> {
         let mut seen = 0usize;
         while off < data.len() {
             let klen = read_u32(data, &mut off)? as usize;
-            off = advance(data, off, klen, "key")?;
+            let key_end = advance(data, off, klen, "key")?;
+            std::str::from_utf8(&data[off..key_end])
+                .map_err(|_| "key is not valid UTF-8".to_string())?;
+            off = key_end;
             let vlen = read_u32(data, &mut off)? as usize;
-            off = advance(data, off, vlen, "value")?;
+            let value_end = advance(data, off, vlen, "value")?;
+            std::str::from_utf8(&data[off..value_end])
+                .map_err(|_| "value is not valid UTF-8".to_string())?;
+            off = value_end;
             seen += 1;
         }
         if seen != count {
@@ -23,7 +88,11 @@ impl<'a> PackedEntries<'a> {
                 "entry count mismatch: found {seen}, expected {count}"
             ));
         }
-        Ok(PackedEntries { data, off: 0 })
+        Ok(PackedEntries {
+            data,
+            off: 0,
+            remaining: count,
+        })
     }
 }
 
@@ -51,9 +120,16 @@ impl<'a> Iterator for PackedEntries<'a> {
         );
         let key = unsafe { std::str::from_utf8_unchecked(key_bytes) };
         let value = unsafe { kv_core::CompactString::from_utf8_unchecked(val_bytes) };
+        self.remaining -= 1;
         Some((key, Value::Str(value)))
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
 }
+
+impl ExactSizeIterator for PackedEntries<'_> {}
 
 fn read_u32(data: &[u8], off: &mut usize) -> Result<u32, String> {
     let end = off

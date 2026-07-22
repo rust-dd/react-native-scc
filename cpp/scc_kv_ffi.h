@@ -186,13 +186,15 @@ uint64_t scc_kv_subscribe(struct SccKvStore *h, SccKvListener cb, void *user_dat
 int32_t scc_kv_unsubscribe(struct SccKvStore *h, uint64_t id);
 
 /**
- * Frees a buffer returned by `scc_kv_get` / `scc_kv_keys`.
+ * Frees a buffer returned by `scc_kv_get`, `scc_kv_get_many_str`, or `scc_kv_keys`.
  */
 void scc_kv_free(uint8_t *ptr, uintptr_t len);
 
 /**
- * Returns the last error on this thread as a heap CString, or NULL.
- * Caller frees with `scc_kv_free_cstring`.
+ * Returns and clears the most recent error on this thread as a heap CString,
+ * or NULL. Only call after an FFI function reports failure; successful calls
+ * intentionally do not clear a prior, unread error. Caller frees the result
+ * with `scc_kv_free_cstring`.
  */
 char *scc_kv_last_error(void);
 
@@ -200,6 +202,20 @@ char *scc_kv_last_error(void);
  * Frees a string returned by `scc_kv_last_error`.
  */
 void scc_kv_free_cstring(char *s);
+
+/**
+ * Reads packed UTF-8 keys in one call. Input entries are repeated
+ * `[u32 key_len LE][key]`; output entries are `[u32 value_len LE][value]`,
+ * with `0xFFFF_FFFF` denoting a missing, expired, or non-string value. The
+ * returned buffer must be released with `scc_kv_free`. Returns 0 on success,
+ * -1 on error.
+ */
+int32_t scc_kv_get_many_str(struct SccKvStore *h,
+                            const uint8_t *data,
+                            uintptr_t len,
+                            uintptr_t count,
+                            uint8_t **out_data,
+                            uintptr_t *out_len);
 
 #ifdef __cplusplus
 }  // extern "C"

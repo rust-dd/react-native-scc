@@ -18,16 +18,24 @@ config.resolver.blockList = [
   /ios\/Libs\/.*/,
   /android\/src\/main\/jniLibs\/.*/,
   new RegExp(
-    path.resolve(workspaceRoot, 'node_modules', 'react').replace(/[/\\]/g, '[/\\\\]') +
-      '[\\/\\\\].*'
+    path
+      .resolve(workspaceRoot, 'node_modules', 'react')
+      .replace(/[/\\]/g, '[/\\\\]') + '[\\/\\\\].*'
   ),
   new RegExp(
-    path.resolve(workspaceRoot, 'node_modules', 'react-native').replace(/[/\\]/g, '[/\\\\]') +
-      '[\\/\\\\].*'
+    path
+      .resolve(workspaceRoot, 'node_modules', 'react-native')
+      .replace(/[/\\]/g, '[/\\\\]') + '[\\/\\\\].*'
+  ),
+  new RegExp(
+    path
+      .resolve(workspaceRoot, 'node_modules', 'jotai')
+      .replace(/[/\\]/g, '[/\\\\]') + '[\\/\\\\].*'
   ),
 ]
 
 config.resolver.extraNodeModules = {
+  jotai: path.resolve(projectRoot, 'node_modules', 'jotai'),
   react: path.resolve(projectRoot, 'node_modules', 'react'),
   'react-native': path.resolve(projectRoot, 'node_modules', 'react-native'),
   'react-native-nitro-modules': path.resolve(

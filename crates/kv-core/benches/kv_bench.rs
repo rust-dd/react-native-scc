@@ -1,7 +1,7 @@
 use std::hint::black_box;
 
-use criterion::{Criterion, criterion_group, criterion_main};
-use kv_core::{OpenOptions, Store, Value};
+use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
+use kv_core::{BatchOp, OpenOptions, Store, Value};
 
 fn seed_keys(store: &Store, n: usize) -> Vec<String> {
     let keys: Vec<String> = (0..n).map(|i| format!("key_{i:05}")).collect();
@@ -94,5 +94,42 @@ fn bench_mixed(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_get, bench_set, bench_mixed);
+fn transaction_ops() -> Vec<BatchOp> {
+    (0..100)
+        .map(|i| BatchOp::Set {
+            key: format!("tx_{i:03}"),
+            value: Value::Str("x".repeat(16).into()),
+        })
+        .collect()
+}
+
+fn bench_transaction_batch(c: &mut Criterion) {
+    let borrowed = Store::in_memory();
+    let owned = Store::in_memory();
+    let mut group = c.benchmark_group("transaction_batch/100x_str16");
+    group.throughput(Throughput::Elements(100));
+    group.bench_function("borrowed_clone_values", |b| {
+        b.iter_batched(
+            transaction_ops,
+            |ops| borrowed.apply_batch(black_box(&ops)).unwrap(),
+            BatchSize::SmallInput,
+        )
+    });
+    group.bench_function("owned_move_values", |b| {
+        b.iter_batched(
+            transaction_ops,
+            |ops| owned.apply_batch_owned(black_box(ops)).unwrap(),
+            BatchSize::SmallInput,
+        )
+    });
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_get,
+    bench_set,
+    bench_mixed,
+    bench_transaction_batch
+);
 criterion_main!(benches);

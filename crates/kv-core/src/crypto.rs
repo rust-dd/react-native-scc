@@ -7,7 +7,9 @@ pub(crate) const MAGIC: [u8; 6] = *b"SCCKV\x01";
 pub(crate) const HEADER_LEN: usize = 8;
 pub(crate) const FLAG_ENCRYPTED: u8 = 1;
 const NONCE_LEN: usize = 12;
-const MAX_FRAME: u32 = 64 * 1024 * 1024;
+const TAG_LEN: usize = 16;
+pub(crate) const MAX_FRAME_PLAINTEXT: usize = crate::record::MAX_PAYLOAD as usize + 8;
+const MAX_FRAME_CIPHERTEXT: usize = MAX_FRAME_PLAINTEXT + TAG_LEN;
 
 /// Derives a 32-byte cipher key from an arbitrary passphrase (SHA-256).
 pub fn derive_encryption_key(passphrase: &[u8]) -> [u8; 32] {
@@ -58,13 +60,15 @@ impl Cipher {
 
     /// Appends one frame: `[u32 ct_len LE][12B nonce][ciphertext + tag]`.
     pub(crate) fn encrypt_frame(&self, plaintext: &[u8], out: &mut Vec<u8>) -> Result<()> {
+        let expected_len = checked_ciphertext_len(plaintext.len())?;
         let mut nonce = [0u8; NONCE_LEN];
         getrandom::fill(&mut nonce).map_err(|e| Error::Crypto(e.to_string()))?;
         let ct = self
             .0
             .encrypt(&Nonce::from(nonce), plaintext)
             .map_err(|_| Error::Crypto("encryption failed".to_string()))?;
-        out.extend_from_slice(&(ct.len() as u32).to_le_bytes());
+        debug_assert_eq!(ct.len(), expected_len as usize);
+        out.extend_from_slice(&expected_len.to_le_bytes());
         out.extend_from_slice(&nonce);
         out.extend_from_slice(&ct);
         Ok(())
@@ -77,7 +81,7 @@ impl Cipher {
             return FrameOutcome::NeedMore;
         }
         let ct_len = u32::from_le_bytes(data[0..4].try_into().unwrap());
-        if ct_len == 0 || ct_len > MAX_FRAME {
+        if ct_len == 0 || ct_len as usize > MAX_FRAME_CIPHERTEXT {
             return FrameOutcome::Corrupt;
         }
         let total = 4 + NONCE_LEN + ct_len as usize;
@@ -95,6 +99,19 @@ impl Cipher {
             Err(_) => FrameOutcome::Corrupt,
         }
     }
+}
+
+fn checked_ciphertext_len(plaintext_len: usize) -> Result<u32> {
+    if plaintext_len > MAX_FRAME_PLAINTEXT {
+        return Err(Error::Crypto(format!(
+            "encryption frame is too large: {plaintext_len} bytes"
+        )));
+    }
+    let ciphertext_len = plaintext_len
+        .checked_add(TAG_LEN)
+        .ok_or_else(|| Error::Crypto("encryption frame length overflow".to_string()))?;
+    u32::try_from(ciphertext_len)
+        .map_err(|_| Error::Crypto("encryption frame length overflow".to_string()))
 }
 
 #[cfg(test)]
@@ -147,5 +164,15 @@ mod tests {
         let (fmt, off) = parse_header(b"garbage!");
         assert!(matches!(fmt, FileFormat::Legacy));
         assert_eq!(off, 0);
+    }
+
+    #[test]
+    fn frame_length_accepts_a_maximum_record_and_rejects_overflow() {
+        assert_eq!(
+            checked_ciphertext_len(MAX_FRAME_PLAINTEXT).unwrap() as usize,
+            MAX_FRAME_CIPHERTEXT
+        );
+        assert!(checked_ciphertext_len(MAX_FRAME_PLAINTEXT + 1).is_err());
+        assert!(checked_ciphertext_len(usize::MAX).is_err());
     }
 }
