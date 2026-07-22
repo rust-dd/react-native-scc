@@ -115,8 +115,8 @@ fn eviction_keeps_live_keys_when_many_expire_at_once() {
             false,
             std::ptr::null(),
             0,
-            100,
-            20,
+            0,
+            60_000,
         )
     };
     assert!(!h.is_null(), "{:?}", last_error());
@@ -132,6 +132,24 @@ fn eviction_keeps_live_keys_when_many_expire_at_once() {
             0
         );
     }
+
+    assert_eq!(unsafe { scc_kv_close(h) }, 0);
+    unsafe { scc_kv_release(h) };
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    let h = unsafe {
+        scc_kv_open(
+            dir_c.as_ptr(),
+            id.as_ptr(),
+            false,
+            false,
+            std::ptr::null(),
+            0,
+            100,
+            20,
+        )
+    };
+    assert!(!h.is_null(), "{:?}", last_error());
 
     std::thread::sleep(std::time::Duration::from_millis(400));
 
