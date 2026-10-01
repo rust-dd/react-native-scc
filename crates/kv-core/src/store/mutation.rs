@@ -2,32 +2,34 @@ use compact_str::CompactString;
 
 use super::{BatchOp, Store};
 use crate::error::Result;
-use crate::record::{self, Op};
+use crate::record::{self, BatchSub, Op};
 use crate::value::Value;
+use crate::wal::Log;
 
 impl Store {
-    pub fn set(&self, key: &str, value: Value) -> Result<()> {
-        let op = Op::Set { key, value: &value };
-        record::validate(&op)?;
-        let rec = match &self.wal {
-            Some(wal) => {
-                wal.check()?;
-                let mut buf = wal.take_buffer(14 + key.len() + value_len(&value));
-                record::encode(&op, &mut buf);
-                Some(buf)
-            }
-            None => None,
-        };
-        {
-            let _mutation = self.begin_mutation()?;
-            if let Some(wal) = &self.wal {
-                wal.check()?;
-            }
-            apply_set(&self.map, key, value, 0);
-            if let (Some(wal), Some(rec)) = (&self.wal, rec) {
-                wal.append(rec)?;
+    fn mutate<R>(&self, f: impl FnOnce(Option<&mut Log>) -> R) -> Result<R> {
+        match &self.wal {
+            Some(wal) => wal.mutate(|log| f(Some(log))),
+            None => {
+                let _mutation = self.begin_mutation()?;
+                Ok(f(None))
             }
         }
+    }
+
+    fn mutate_atomically<R>(&self, f: impl FnOnce(Option<&mut Log>) -> R) -> Result<R> {
+        let _compaction = self.wal.as_ref().map(|_| self.compact_gate.read().unwrap());
+        self.mutate(f)
+    }
+
+    pub fn set(&self, key: &str, value: Value) -> Result<()> {
+        record::validate(&Op::Set { key, value: &value })?;
+        self.mutate(|log| {
+            if let Some(log) = log {
+                log.append(&Op::Set { key, value: &value });
+            }
+            apply_set(&self.map, key, value, 0);
+        })?;
         self.listeners.notify(Some(key));
         Ok(())
     }
@@ -36,99 +38,66 @@ impl Store {
     /// as missing immediately; the background sweeper reclaims them.
     pub fn set_with_ttl(&self, key: &str, value: Value, ttl_ms: u64) -> Result<()> {
         let expires_at_ms = crate::now_ms().saturating_add(ttl_ms);
-        let op = Op::SetTtl {
+        record::validate(&Op::SetTtl {
             key,
             value: &value,
             expires_at_ms,
-        };
-        record::validate(&op)?;
-        let rec = match &self.wal {
-            Some(wal) => {
-                wal.check()?;
-                let mut buf = wal.take_buffer(22 + key.len() + value_len(&value));
-                record::encode(&op, &mut buf);
-                Some(buf)
-            }
-            None => None,
-        };
-        {
-            let _mutation = self.begin_mutation()?;
-            if let Some(wal) = &self.wal {
-                wal.check()?;
+        })?;
+        self.mutate(|log| {
+            if let Some(log) = log {
+                log.append(&Op::SetTtl {
+                    key,
+                    value: &value,
+                    expires_at_ms,
+                });
             }
             apply_set(&self.map, key, value, expires_at_ms);
-            if let (Some(wal), Some(rec)) = (&self.wal, rec) {
-                wal.append(rec)?;
-            }
-        }
+        })?;
         self.listeners.notify(Some(key));
         Ok(())
     }
 
-    /// Batch write: all records land in one WAL append (a single channel
-    /// send), listeners fire per key. Values are applied in iteration order.
+    /// Listeners fire per key; unlike `apply_batch`, recovery may keep only a prefix.
     pub fn set_many<'a>(&self, entries: impl Iterator<Item = (&'a str, Value)>) -> Result<()> {
         let entries = entries.collect::<Vec<_>>();
         for (key, value) in &entries {
             record::validate(&Op::Set { key, value })?;
         }
-        let mut rec = match &self.wal {
-            Some(wal) => {
-                wal.check()?;
-                let mut buf = wal.take_buffer(256);
-                for (key, value) in &entries {
-                    record::encode(&Op::Set { key, value }, &mut buf);
-                }
-                Some(buf)
-            }
-            None => None,
-        };
         let collect_keys = self.listeners.is_active();
-        let mut notify_keys = Vec::<CompactString>::new();
-        {
-            let _mutation = self.begin_mutation()?;
-            if let Some(wal) = &self.wal {
-                wal.check()?;
-            }
-            let _compaction = self.wal.as_ref().map(|_| self.compact_gate.read().unwrap());
+        let notify_keys = self.mutate_atomically(|mut log| {
+            let mut notify_keys = Vec::<CompactString>::new();
             for (key, value) in entries {
+                if let Some(log) = log.as_deref_mut() {
+                    log.append(&Op::Set { key, value: &value });
+                }
                 apply_set(&self.map, key, value, 0);
                 if collect_keys {
                     notify_keys.push(key.into());
                 }
             }
-            if let (Some(wal), Some(buf)) = (&self.wal, rec.take())
-                && !buf.is_empty()
-            {
-                wal.append(buf)?;
-            }
-        }
-        for key in &notify_keys {
-            self.listeners.notify(Some(key));
-        }
+            notify_keys
+        })?;
+        self.notify_keys(&notify_keys);
         Ok(())
     }
 
     /// Applies `ops` as one crash-atomic unit while preserving the borrowed API.
     pub fn apply_batch(&self, ops: &[BatchOp]) -> Result<()> {
         if ops.is_empty() {
-            let _mutation = self.begin_mutation()?;
-            return Ok(());
+            return self.mutate(|_| ());
         }
-        let rec = self.encode_batch(ops)?;
+        record::validate(&Op::Batch {
+            ops: &batch_subs(ops),
+        })?;
         let collect_keys = self.listeners.is_active();
-        let mut notify_keys = Vec::<CompactString>::new();
-        {
-            let _mutation = self.begin_mutation()?;
-            if let Some(wal) = &self.wal {
-                wal.check()?;
+        let notify_keys = self.mutate_atomically(|log| {
+            if let Some(log) = log {
+                log.append(&Op::Batch {
+                    ops: &batch_subs(ops),
+                });
             }
-            let _compaction = self.wal.as_ref().map(|_| self.compact_gate.read().unwrap());
-            self.apply_ops_borrowed(ops, collect_keys, &mut notify_keys);
-            if let (Some(wal), Some(rec)) = (&self.wal, rec) {
-                wal.append(rec)?;
-            }
-        }
+            self.apply_ops_borrowed(ops, collect_keys)
+        })?;
         self.notify_keys(&notify_keys);
         Ok(())
     }
@@ -136,49 +105,26 @@ impl Store {
     /// Applies an owned crash-atomic batch without cloning values into the map.
     pub fn apply_batch_owned(&self, ops: Vec<BatchOp>) -> Result<()> {
         if ops.is_empty() {
-            let _mutation = self.begin_mutation()?;
-            return Ok(());
+            return self.mutate(|_| ());
         }
-        let rec = self.encode_batch(&ops)?;
+        record::validate(&Op::Batch {
+            ops: &batch_subs(&ops),
+        })?;
         let collect_keys = self.listeners.is_active();
-        let mut notify_keys = Vec::<CompactString>::new();
-        {
-            let _mutation = self.begin_mutation()?;
-            if let Some(wal) = &self.wal {
-                wal.check()?;
+        let notify_keys = self.mutate_atomically(|log| {
+            if let Some(log) = log {
+                log.append(&Op::Batch {
+                    ops: &batch_subs(&ops),
+                });
             }
-            let _compaction = self.wal.as_ref().map(|_| self.compact_gate.read().unwrap());
-            self.apply_ops_owned(ops, collect_keys, &mut notify_keys);
-            if let (Some(wal), Some(rec)) = (&self.wal, rec) {
-                wal.append(rec)?;
-            }
-        }
+            self.apply_ops_owned(ops, collect_keys)
+        })?;
         self.notify_keys(&notify_keys);
         Ok(())
     }
 
-    fn encode_batch(&self, ops: &[BatchOp]) -> Result<Option<Vec<u8>>> {
-        let subs = ops
-            .iter()
-            .map(|op| match op {
-                BatchOp::Set { key, value } => record::BatchSub::Set { key, value },
-                BatchOp::Delete { key } => record::BatchSub::Delete { key },
-            })
-            .collect::<Vec<_>>();
-        let op = Op::Batch { ops: &subs };
-        record::validate(&op)?;
-        match &self.wal {
-            Some(wal) => {
-                wal.check()?;
-                let mut buf = wal.take_buffer(256);
-                record::encode(&op, &mut buf);
-                Ok(Some(buf))
-            }
-            None => Ok(None),
-        }
-    }
-
-    fn apply_ops_borrowed(&self, ops: &[BatchOp], collect: bool, notify: &mut Vec<CompactString>) {
+    fn apply_ops_borrowed(&self, ops: &[BatchOp], collect: bool) -> Vec<CompactString> {
+        let mut notify = Vec::new();
         for op in ops {
             let (key, changed) = match op {
                 BatchOp::Set { key, value } => {
@@ -191,9 +137,11 @@ impl Store {
                 notify.push(key.as_str().into());
             }
         }
+        notify
     }
 
-    fn apply_ops_owned(&self, ops: Vec<BatchOp>, collect: bool, notify: &mut Vec<CompactString>) {
+    fn apply_ops_owned(&self, ops: Vec<BatchOp>, collect: bool) -> Vec<CompactString> {
+        let mut notify = Vec::new();
         for op in ops {
             match op {
                 BatchOp::Set { key, value } => {
@@ -210,6 +158,7 @@ impl Store {
                 }
             }
         }
+        notify
     }
 
     fn notify_keys(&self, keys: &[CompactString]) {
@@ -219,28 +168,14 @@ impl Store {
     }
 
     pub fn delete(&self, key: &str) -> Result<bool> {
-        let op = Op::Delete { key };
-        record::validate(&op)?;
-        let rec = match &self.wal {
-            Some(wal) => {
-                wal.check()?;
-                let mut buf = wal.take_buffer(13 + key.len());
-                record::encode(&op, &mut buf);
-                Some(buf)
-            }
-            None => None,
-        };
-        let existed = {
-            let _mutation = self.begin_mutation()?;
-            if let Some(wal) = &self.wal {
-                wal.check()?;
-            }
+        record::validate(&Op::Delete { key })?;
+        let existed = self.mutate(|log| {
             let existed = self.map.remove_sync(key).is_some();
-            if existed && let (Some(wal), Some(rec)) = (&self.wal, rec) {
-                wal.append(rec)?;
+            if existed && let Some(log) = log {
+                log.append(&Op::Delete { key });
             }
             existed
-        };
+        })?;
         if existed {
             self.listeners.notify(Some(key));
         }
@@ -248,37 +183,24 @@ impl Store {
     }
 
     pub fn clear(&self) -> Result<()> {
-        let rec = match &self.wal {
-            Some(wal) => {
-                wal.check()?;
-                let mut buf = wal.take_buffer(13);
-                record::encode(&Op::Clear, &mut buf);
-                Some(buf)
-            }
-            None => None,
-        };
-        {
-            let _mutation = self.begin_mutation()?;
-            if let Some(wal) = &self.wal {
-                wal.check()?;
-            }
+        self.mutate(|log| {
             self.map.clear_sync();
-            if let (Some(wal), Some(rec)) = (&self.wal, rec) {
-                wal.append(rec)?;
+            if let Some(log) = log {
+                log.append(&Op::Clear);
             }
-        }
+        })?;
         self.listeners.notify(None);
         Ok(())
     }
 }
 
-fn value_len(value: &Value) -> usize {
-    match value {
-        Value::Str(s) | Value::Json(s) => s.len(),
-        Value::Num(_) => 8,
-        Value::Bool(_) => 1,
-        Value::Bytes(b) => b.len(),
-    }
+fn batch_subs(ops: &[BatchOp]) -> Vec<BatchSub<'_>> {
+    ops.iter()
+        .map(|op| match op {
+            BatchOp::Set { key, value } => BatchSub::Set { key, value },
+            BatchOp::Delete { key } => BatchSub::Delete { key },
+        })
+        .collect()
 }
 
 fn apply_set(map: &crate::ValueMap, key: &str, value: Value, expires_at_ms: u64) {

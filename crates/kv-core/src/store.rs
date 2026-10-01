@@ -26,6 +26,7 @@ pub struct OpenOptions {
     pub group_bytes: usize,
     pub fsync_interval: Duration,
     pub compact_min: u64,
+    pub writer_linger: Duration,
     pub encryption_key: Option<[u8; 32]>,
     pub max_entries: Option<usize>,
     pub ttl_sweep_interval: Duration,
@@ -40,6 +41,7 @@ impl Default for OpenOptions {
             group_bytes: 128 * 1024,
             fsync_interval: Duration::from_secs(1),
             compact_min: 4 * 1024 * 1024,
+            writer_linger: Duration::from_millis(250),
             encryption_key: None,
             max_entries: None,
             ttl_sweep_interval: Duration::from_secs(30),
@@ -155,8 +157,6 @@ impl Store {
         let listeners = Arc::new(Listeners::new());
         let map = Arc::new(crate::new_value_map());
         let compact_gate = Arc::new(RwLock::new(()));
-        let mutation_gate = Arc::new(Mutex::new(()));
-        let closed = Arc::new(AtomicBool::new(false));
         let snap_len = snapshot::load(&snap_path, &map, cipher.as_deref())?;
         let wal_len = replay_wal(&wal_path, &map, cipher.as_deref())?;
         let wal = WalHandle::spawn(
@@ -168,13 +168,12 @@ impl Store {
                 group_bytes: opts.group_bytes,
                 fsync_interval: opts.fsync_interval,
                 compact_min: opts.compact_min,
+                linger: opts.writer_linger,
                 cipher,
                 listeners: listeners.clone(),
                 sweep_interval: opts.ttl_sweep_interval,
                 max_entries: opts.max_entries,
                 compact_gate: compact_gate.clone(),
-                mutation_gate: mutation_gate.clone(),
-                closed: closed.clone(),
             },
             map.clone(),
             wal_len,
@@ -183,11 +182,11 @@ impl Store {
         Ok(Arc::new(Store {
             map,
             listeners,
-            closed,
+            closed: Arc::new(AtomicBool::new(false)),
             wal: Some(wal),
             sweeper: None,
             compact_gate,
-            mutation_gate: Some(mutation_gate),
+            mutation_gate: None,
             ungated_mutations: AtomicUsize::new(0),
             close_gate: Mutex::new(()),
         }))
@@ -297,18 +296,20 @@ impl Store {
     /// Listener callbacks already dispatched by a mutation may finish later.
     pub fn close(&self) -> Result<()> {
         let _close = self.close_gate.lock().unwrap();
+        if let Some(wal) = &self.wal {
+            if wal.close() {
+                self.closed.store(true, Ordering::Release);
+            }
+            wal.join();
+            return Ok(());
+        }
         if let Some(gate) = &self.mutation_gate {
-            {
-                let _mutation = gate.lock().unwrap();
-                if self.closed.swap(true, Ordering::AcqRel) {
-                    return Ok(());
-                }
-                if let Some(sweeper) = &self.sweeper {
-                    sweeper.signal_stop();
-                }
-                if let Some(wal) = &self.wal {
-                    wal.signal_shutdown();
-                }
+            let _mutation = gate.lock().unwrap();
+            if self.closed.swap(true, Ordering::AcqRel) {
+                return Ok(());
+            }
+            if let Some(sweeper) = &self.sweeper {
+                sweeper.signal_stop();
             }
         } else {
             if self.closed.load(Ordering::Acquire) {
@@ -325,15 +326,9 @@ impl Store {
             if let Some(sweeper) = &self.sweeper {
                 sweeper.signal_stop();
             }
-            if let Some(wal) = &self.wal {
-                wal.signal_shutdown();
-            }
         }
         if let Some(sweeper) = &self.sweeper {
             sweeper.join();
-        }
-        if let Some(wal) = &self.wal {
-            wal.join();
         }
         Ok(())
     }

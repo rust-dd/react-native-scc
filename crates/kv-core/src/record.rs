@@ -126,8 +126,11 @@ fn value_len(value: &Value) -> usize {
     }
 }
 
-pub(crate) fn encode(op: &Op, out: &mut Vec<u8>) {
+pub(crate) fn encode_unsealed(op: &Op, out: &mut Vec<u8>) {
     debug_assert!(validate(op).is_ok());
+    if let Some(payload_len) = encoded_payload_len(op) {
+        out.reserve(8 + payload_len);
+    }
     let frame_start = out.len();
     out.extend_from_slice(&[0u8; 8]);
     let payload_start = out.len();
@@ -183,9 +186,27 @@ pub(crate) fn encode(op: &Op, out: &mut Vec<u8>) {
         }
     }
     let payload_len = (out.len() - payload_start) as u32;
-    let crc = crc32fast::hash(&out[payload_start..]);
     out[frame_start..frame_start + 4].copy_from_slice(&payload_len.to_le_bytes());
-    out[frame_start + 4..frame_start + 8].copy_from_slice(&crc.to_le_bytes());
+}
+
+#[cfg(test)]
+pub(crate) fn encode(op: &Op, out: &mut Vec<u8>) {
+    let start = out.len();
+    encode_unsealed(op, out);
+    seal(&mut out[start..]);
+}
+
+pub(crate) fn seal(records: &mut [u8]) {
+    let mut offset = 0;
+    while offset < records.len() {
+        let payload_start = offset + 8;
+        let payload_len =
+            u32::from_le_bytes(records[offset..offset + 4].try_into().unwrap()) as usize;
+        let end = payload_start + payload_len;
+        let crc = crc32fast::hash(&records[payload_start..end]);
+        records[offset + 4..payload_start].copy_from_slice(&crc.to_le_bytes());
+        offset = end;
+    }
 }
 
 pub(crate) fn decode(buf: &[u8]) -> DecodeOutcome {
@@ -440,6 +461,28 @@ mod tests {
         zero.extend_from_slice(&0u32.to_le_bytes());
         zero.extend_from_slice(&[0u8; 4]);
         assert_eq!(decode(&zero), DecodeOutcome::Corrupt);
+    }
+
+    #[test]
+    fn sealing_a_run_matches_encoding_each_record() {
+        let value = Value::Str("payload".into());
+        let ops = [
+            Op::Set {
+                key: "a",
+                value: &value,
+            },
+            Op::Delete { key: "b" },
+            Op::Clear,
+        ];
+        let mut sealed = Vec::new();
+        let mut unsealed = Vec::new();
+        for op in &ops {
+            encode(op, &mut sealed);
+            encode_unsealed(op, &mut unsealed);
+        }
+        assert_ne!(sealed, unsealed);
+        seal(&mut unsealed);
+        assert_eq!(sealed, unsealed);
     }
 
     #[test]

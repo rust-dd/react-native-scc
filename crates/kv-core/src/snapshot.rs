@@ -13,26 +13,13 @@ fn io_err(path: &Path, source: std::io::Error) -> Error {
     }
 }
 
-pub(crate) fn write_atomic(
-    path: &Path,
-    map: &crate::ValueMap,
-    cipher: Option<&Cipher>,
-) -> Result<u64> {
-    write_atomic_impl(path, map, cipher, crypto::MAX_FRAME_PLAINTEXT)
-}
-
-fn write_atomic_impl(
-    path: &Path,
-    map: &crate::ValueMap,
-    cipher: Option<&Cipher>,
-    frame_plaintext_limit: usize,
-) -> Result<u64> {
+pub(crate) fn capture(map: &crate::ValueMap) -> Vec<u8> {
     let now = crate::now_ms();
     let mut records = Vec::new();
     map.iter_sync(|k, slot| {
         if !slot.is_expired(now) {
             if slot.expires_at_ms == 0 {
-                record::encode(
+                record::encode_unsealed(
                     &Op::Set {
                         key: k,
                         value: &slot.value,
@@ -40,7 +27,7 @@ fn write_atomic_impl(
                     &mut records,
                 );
             } else {
-                record::encode(
+                record::encode_unsealed(
                     &Op::SetTtl {
                         key: k,
                         value: &slot.value,
@@ -52,16 +39,39 @@ fn write_atomic_impl(
         }
         true
     });
+    records
+}
+
+pub(crate) fn persist(path: &Path, mut records: Vec<u8>, cipher: Option<&Cipher>) -> Result<u64> {
+    persist_impl(path, &mut records, cipher, crypto::MAX_FRAME_PLAINTEXT)
+}
+
+#[cfg(test)]
+pub(crate) fn write_atomic(
+    path: &Path,
+    map: &crate::ValueMap,
+    cipher: Option<&Cipher>,
+) -> Result<u64> {
+    persist(path, capture(map), cipher)
+}
+
+fn persist_impl(
+    path: &Path,
+    records: &mut [u8],
+    cipher: Option<&Cipher>,
+    frame_plaintext_limit: usize,
+) -> Result<u64> {
+    record::seal(records);
     let tmp = path.with_extension("tmp");
     let mut file = fs::File::create(&tmp).map_err(|e| io_err(&tmp, e))?;
     let header = crypto::header_bytes(cipher.is_some());
     file.write_all(&header).map_err(|e| io_err(&tmp, e))?;
     let body_len = match cipher {
         Some(cipher) => {
-            write_encrypted_records(&mut file, &tmp, cipher, &records, frame_plaintext_limit)?
+            write_encrypted_records(&mut file, &tmp, cipher, records, frame_plaintext_limit)?
         }
         None => {
-            file.write_all(&records).map_err(|e| io_err(&tmp, e))?;
+            file.write_all(records).map_err(|e| io_err(&tmp, e))?;
             records.len() as u64
         }
     };
@@ -157,7 +167,7 @@ fn write_atomic_with_frame_limit(
     cipher: &Cipher,
     frame_plaintext_limit: usize,
 ) -> Result<u64> {
-    write_atomic_impl(path, map, Some(cipher), frame_plaintext_limit)
+    persist_impl(path, &mut capture(map), Some(cipher), frame_plaintext_limit)
 }
 
 /// Maps a file read-only for recovery-time parsing without copying it into
