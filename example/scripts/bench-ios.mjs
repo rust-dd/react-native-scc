@@ -140,7 +140,7 @@ function launch(target) {
   } else {
     run('xcrun', [
       'devicectl', 'device', 'process', 'launch',
-      '--device', target.id, '--terminate-existing', BUNDLE_ID, ...launchArguments(),
+      '--device', target.id, '--terminate-existing', BUNDLE_ID, '--', ...launchArguments(),
     ])
   }
 }
