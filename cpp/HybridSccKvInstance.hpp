@@ -1,6 +1,7 @@
 #pragma once
 
 #include "HybridSccKvInstanceSpec.hpp"
+#include "SccKvFastPath.hpp"
 #include "scc_kv_ffi.h"
 
 #include <NitroModules/ArrayBuffer.hpp>
@@ -418,8 +419,20 @@ public:
         [self, keys] { return self->getManyString(keys); });
   }
 
+protected:
+  void loadHybridMethods() override {
+    HybridSccKvInstanceSpec::loadHybridMethods();
+    registerHybrids(this, [](Prototype& prototype) {
+      prototype.registerRawHybridMethod("createFastPath", 0, &HybridSccKvInstance::createFastPath);
+    });
+  }
+
 private:
   SccKvStore* _handle;
+
+  jsi::Value createFastPath(jsi::Runtime& rt, const jsi::Value&, const jsi::Value*, size_t) {
+    return fastpath::create(rt, _handle, shared(this));
+  }
 
   struct ListenerBox {
     std::function<void(const std::optional<std::string>&)> fn;

@@ -253,10 +253,29 @@ class TransactionContext implements KVTransaction {
   }
 }
 
+interface NativeCalls {
+  getString(key: string): string | undefined
+  getNumber(key: string): number | undefined
+  getBoolean(key: string): boolean | undefined
+  getJson(key: string): string | undefined
+  contains(key: string): boolean
+  remove(key: string): boolean
+  setString(key: string, value: string): void
+  setNumber(key: string, value: number): void
+  setBoolean(key: string, value: boolean): void
+}
+
+function nativeCalls(native: SccKvInstance): NativeCalls {
+  const create = (native as unknown as { createFastPath?: () => NativeCalls })
+    .createFastPath
+  return typeof create === 'function' ? create.call(native) : native
+}
+
 let defaultInstance: KV | undefined
 
 export class KV {
   private readonly native: SccKvInstance
+  private readonly calls: NativeCalls
   private readonly listeners = new Set<{ listener: KVChangeListener }>()
   private nativeSubscription: number | undefined
   private readonly keyPrefix: string
@@ -270,6 +289,15 @@ export class KV {
   ) {
     this.native = native
     this.keyPrefix = keyPrefix
+    this.calls = nativeCalls(native)
+    if (keyPrefix === '' && this.calls !== native) {
+      // Fast-path functions ignore `this`, so a root store can expose them directly.
+      this.getString = this.calls.getString
+      this.getNumber = this.calls.getNumber
+      this.getBoolean = this.calls.getBoolean
+      this.contains = this.calls.contains
+      this.delete = this.calls.remove
+    }
   }
 
   /**
@@ -393,9 +421,9 @@ export class KV {
     const fullKey =
       this.keyPrefix === '' ? key : `${this.keyPrefix}${key}`
     if (options === undefined) {
-      if (typeof value === 'string') this.native.setString(fullKey, value)
-      else if (typeof value === 'number') this.native.setNumber(fullKey, value)
-      else if (typeof value === 'boolean') this.native.setBoolean(fullKey, value)
+      if (typeof value === 'string') this.calls.setString(fullKey, value)
+      else if (typeof value === 'number') this.calls.setNumber(fullKey, value)
+      else if (typeof value === 'boolean') this.calls.setBoolean(fullKey, value)
       else this.native.setBuffer(fullKey, value)
       return
     }
@@ -407,9 +435,9 @@ export class KV {
       else this.native.setBufferTtl(fullKey, value, ttl)
       return
     }
-    if (typeof value === 'string') this.native.setString(fullKey, value)
-    else if (typeof value === 'number') this.native.setNumber(fullKey, value)
-    else if (typeof value === 'boolean') this.native.setBoolean(fullKey, value)
+    if (typeof value === 'string') this.calls.setString(fullKey, value)
+    else if (typeof value === 'number') this.calls.setNumber(fullKey, value)
+    else if (typeof value === 'boolean') this.calls.setBoolean(fullKey, value)
     else this.native.setBuffer(fullKey, value)
   }
 
@@ -425,19 +453,19 @@ export class KV {
   }
 
   getString(key: string): string | undefined {
-    return this.native.getString(
+    return this.calls.getString(
       this.keyPrefix === '' ? key : `${this.keyPrefix}${key}`
     )
   }
 
   getNumber(key: string): number | undefined {
-    return this.native.getNumber(
+    return this.calls.getNumber(
       this.keyPrefix === '' ? key : `${this.keyPrefix}${key}`
     )
   }
 
   getBoolean(key: string): boolean | undefined {
-    return this.native.getBoolean(
+    return this.calls.getBoolean(
       this.keyPrefix === '' ? key : `${this.keyPrefix}${key}`
     )
   }
@@ -454,19 +482,19 @@ export class KV {
   }
 
   [INTERNAL_GET_JSON_TEXT](key: string): string | undefined {
-    return this.native.getJson(
+    return this.calls.getJson(
       this.keyPrefix === '' ? key : `${this.keyPrefix}${key}`
     )
   }
 
   contains(key: string): boolean {
-    return this.native.contains(
+    return this.calls.contains(
       this.keyPrefix === '' ? key : `${this.keyPrefix}${key}`
     )
   }
 
   delete(key: string): boolean {
-    return this.native.remove(
+    return this.calls.remove(
       this.keyPrefix === '' ? key : `${this.keyPrefix}${key}`
     )
   }

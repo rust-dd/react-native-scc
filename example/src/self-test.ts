@@ -63,6 +63,54 @@ async function waitForSelectedChange(): Promise<string | undefined> {
   }
 }
 
+function wellFormed(text: string): string {
+  let out = ''
+  for (let index = 0; index < text.length; index++) {
+    const unit = text.charCodeAt(index)
+    const next = text.charCodeAt(index + 1)
+    if (unit >= 0xd800 && unit <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) {
+      out += text.slice(index, index + 2)
+      index++
+    } else if (unit >= 0xd800 && unit <= 0xdfff) {
+      out += '\ufffd'
+    } else {
+      out += text[index]
+    }
+  }
+  return out
+}
+
+function fastPathMatchesNitro(): boolean {
+  const nitro = (
+    kv as unknown as { native: { getString(key: string): string | undefined } }
+  ).native
+  const samples = [
+    '',
+    'ascii',
+    'héllo wörld',
+    '日本語テキスト',
+    '🎉 party',
+    'a\u00e9\u4e2d\ud83c\udf89z',
+    '\ud800x',
+    'x\udc00',
+    'é'.repeat(5000),
+    'y'.repeat(300_000),
+  ]
+  const keys = samples.map((_, index) =>
+    index % 3 === 0 ? `fast.ü.${index}` : index % 3 === 1 ? `fast.${index}` : `fast.\ud800.${index}`
+  )
+  try {
+    return samples.every((value, index) => {
+      const key = keys[index]!
+      kv.set(key, value)
+      const expected = wellFormed(value)
+      return kv.getString(key) === expected && nitro.getString(key) === expected
+    })
+  } finally {
+    for (const key of keys) kv.delete(key)
+  }
+}
+
 export async function runSelfTest(
   onUpdate?: SelfTestUpdate
 ): Promise<SelfTestResult[]> {
@@ -98,6 +146,7 @@ export async function runSelfTest(
     kv.contains('str') && kv.delete('str') && !kv.contains('str')
   )
   check('keys', kv.getAllKeys().includes('num'))
+  check('fast path: unicode, surrogates, large values', fastPathMatchesNitro())
 
   const syncBatch = {
     batch_a: 'alpha',
