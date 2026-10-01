@@ -263,6 +263,8 @@ interface NativeCalls {
   setString(key: string, value: string): void
   setNumber(key: string, value: number): void
   setBoolean(key: string, value: boolean): void
+  getManyString(keys: string[]): (string | null | undefined)[]
+  setManyString(keys: string[], values: string[]): void
 }
 
 function nativeCalls(native: SccKvInstance): NativeCalls {
@@ -575,14 +577,13 @@ export class KV {
   setMany(entries: Record<string, string>): void {
     const keys = Object.keys(entries)
     if (keys.length === 0) return
-    this.native.setManyString(this.fullKeys(keys), Object.values(entries))
+    this.calls.setManyString(this.fullKeys(keys), Object.values(entries))
   }
 
   /** Batch string read; missing keys come back as undefined. */
   getMany(keys: string[]): (string | undefined)[] {
     if (keys.length === 0) return []
-    const values: (string | null | undefined)[] =
-      this.native.getManyString(this.fullKeys(keys))
+    const values = this.calls.getManyString(this.fullKeys(keys))
     for (let index = 0; index < values.length; index++) {
       if (values[index] === null) values[index] = undefined
     }

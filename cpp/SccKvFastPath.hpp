@@ -57,9 +57,8 @@ inline void appendUtf16AsUtf8(std::string& out, const char16_t* data, size_t len
   out.resize(static_cast<size_t>(cursor - out.data()));
 }
 
-inline void readUtf8(jsi::Runtime& rt, const jsi::Value& value, std::string& out) {
+inline void appendUtf8(jsi::Runtime& rt, const jsi::Value& value, std::string& out) {
   if (!value.isString()) throw jsi::JSError(rt, "expected a string");
-  out.clear();
   auto collect = [&out](bool ascii, const void* data, size_t length) {
     if (ascii) {
       out.append(static_cast<const char*>(data), length);
@@ -68,6 +67,22 @@ inline void readUtf8(jsi::Runtime& rt, const jsi::Value& value, std::string& out
     }
   };
   value.getString(rt).getStringData(rt, collect);
+}
+
+inline void readUtf8(jsi::Runtime& rt, const jsi::Value& value, std::string& out) {
+  out.clear();
+  appendUtf8(rt, value, out);
+}
+
+inline void appendField(jsi::Runtime& rt, const jsi::Value& value, std::string& packed) {
+  size_t lengthAt = packed.size();
+  packed.append(4, '\0');
+  appendUtf8(rt, value, packed);
+  size_t length = packed.size() - lengthAt - 4;
+  if (length > UINT32_MAX) throw jsi::JSError(rt, "string exceeds the batch limit");
+  for (size_t shift = 0; shift < 4; shift++) {
+    packed[lengthAt + shift] = static_cast<char>((length >> (shift * 8)) & 0xFF);
+  }
 }
 
 inline const uint8_t* bytes(const std::string& text) {
@@ -85,6 +100,12 @@ inline void expectArguments(jsi::Runtime& rt, size_t count, size_t expected) {
   if (count < expected) throw jsi::JSError(rt, "missing arguments");
 }
 
+constexpr size_t maxRetainedCapacity = 256 * 1024;
+
+inline void trimRetained(std::string& buffer) {
+  if (buffer.capacity() > maxRetainedCapacity) std::string().swap(buffer);
+}
+
 inline std::string& keyBuffer() {
   static thread_local std::string buffer;
   return buffer;
@@ -97,7 +118,6 @@ inline std::string& valueBuffer() {
 
 inline jsi::Value getStringLike(jsi::Runtime& rt, SccKvStore* handle, const std::string& key,
                                 uint8_t tag) {
-  constexpr size_t maxRetainedCapacity = 256 * 1024;
   static thread_local std::vector<uint8_t> scratch(4096);
   std::vector<uint8_t> oversized;
   std::vector<uint8_t>* buffer = &scratch;
@@ -171,9 +191,39 @@ inline jsi::Object create(jsi::Runtime& rt, SccKvStore* handle, std::shared_ptr<
     const std::string& name = key(rt, args, count, 2);
     std::string& value = valueBuffer();
     readUtf8(rt, args[1], value);
-    if (scc_kv_set_str(handle, bytes(name), name.size(), bytes(value), value.size()) != 0) {
-      throwLastError(rt, "set");
+    int rc = scc_kv_set_str(handle, bytes(name), name.size(), bytes(value), value.size());
+    trimRetained(value);
+    if (rc != 0) throwLastError(rt, "set");
+    return jsi::Value::undefined();
+  });
+  define("getManyString", 1, [handle, owner](jsi::Runtime& rt, const jsi::Value&, const jsi::Value* args, size_t count) {
+    expectArguments(rt, count, 1);
+    jsi::Array keys = args[0].asObject(rt).asArray(rt);
+    size_t length = keys.size(rt);
+    jsi::Array values(rt, length);
+    std::string& key = keyBuffer();
+    for (size_t index = 0; index < length; index++) {
+      readUtf8(rt, keys.getValueAtIndex(rt, index), key);
+      values.setValueAtIndex(rt, index, getStringLike(rt, handle, key, 0));
     }
+    return values;
+  });
+  define("setManyString", 2, [handle, owner](jsi::Runtime& rt, const jsi::Value&, const jsi::Value* args, size_t count) {
+    expectArguments(rt, count, 2);
+    jsi::Array keys = args[0].asObject(rt).asArray(rt);
+    jsi::Array values = args[1].asObject(rt).asArray(rt);
+    size_t length = keys.size(rt);
+    if (values.size(rt) != length) throw jsi::JSError(rt, "keys and values length mismatch");
+    if (length == 0) return jsi::Value::undefined();
+    std::string& packed = valueBuffer();
+    packed.clear();
+    for (size_t index = 0; index < length; index++) {
+      appendField(rt, keys.getValueAtIndex(rt, index), packed);
+      appendField(rt, values.getValueAtIndex(rt, index), packed);
+    }
+    int rc = scc_kv_set_many_str(handle, bytes(packed), packed.size(), length);
+    trimRetained(packed);
+    if (rc != 0) throwLastError(rt, "setMany");
     return jsi::Value::undefined();
   });
   define("setNumber", 2, [handle, owner, key](jsi::Runtime& rt, const jsi::Value&, const jsi::Value* args, size_t count) {

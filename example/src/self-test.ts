@@ -82,7 +82,12 @@ function wellFormed(text: string): string {
 
 function fastPathMatchesNitro(): boolean {
   const nitro = (
-    kv as unknown as { native: { getString(key: string): string | undefined } }
+    kv as unknown as {
+      native: {
+        getString(key: string): string | undefined
+        getManyString(keys: string[]): (string | null)[]
+      }
+    }
   ).native
   const samples = [
     '',
@@ -100,12 +105,23 @@ function fastPathMatchesNitro(): boolean {
     index % 3 === 0 ? `fast.ü.${index}` : index % 3 === 1 ? `fast.${index}` : `fast.\ud800.${index}`
   )
   try {
-    return samples.every((value, index) => {
+    const singles = samples.every((value, index) => {
       const key = keys[index]!
       kv.set(key, value)
       const expected = wellFormed(value)
       return kv.getString(key) === expected && nitro.getString(key) === expected
     })
+    for (const key of keys) kv.delete(key)
+    kv.setMany(Object.fromEntries(keys.map((key, index) => [key, samples[index]!])))
+    const viaFastPath = kv.getMany(keys)
+    const viaNitro = nitro.getManyString(keys)
+    return (
+      singles &&
+      samples.every((value, index) => {
+        const expected = wellFormed(value)
+        return viaFastPath[index] === expected && viaNitro[index] === expected
+      })
+    )
   } finally {
     for (const key of keys) kv.delete(key)
   }
@@ -146,7 +162,7 @@ export async function runSelfTest(
     kv.contains('str') && kv.delete('str') && !kv.contains('str')
   )
   check('keys', kv.getAllKeys().includes('num'))
-  check('fast path: unicode, surrogates, large values', fastPathMatchesNitro())
+  check('fast path: unicode, surrogates, large values, batches', fastPathMatchesNitro())
 
   const syncBatch = {
     batch_a: 'alpha',
