@@ -438,11 +438,9 @@ pub unsafe extern "C" fn scc_kv_set_str(
         let s = unsafe { store(h) }?;
         let key = unsafe { key_str(key, key_len) }?;
         let bytes = unsafe { data_slice(data, len) }?;
-        let value = kv_core::CompactString::from_utf8(bytes)
+        let value = std::str::from_utf8(bytes)
             .map_err(|_| "string value is not valid UTF-8".to_string())?;
-        s.store
-            .set(key, Value::Str(value))
-            .map_err(|e| e.to_string())?;
+        s.store.set_str(key, value).map_err(|e| e.to_string())?;
         Ok(0)
     })
 }

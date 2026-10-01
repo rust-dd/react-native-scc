@@ -9,11 +9,13 @@ pub enum Value {
     Json(CompactString),
 }
 
+pub(crate) const STR_TAG: u8 = 0;
+
 impl Value {
     /// Wire tag for the FFI/WAL encoding: 0=Str, 1=Num, 2=Bool, 3=Bytes, 4=Json.
     pub fn tag(&self) -> u8 {
         match self {
-            Value::Str(_) => 0,
+            Value::Str(_) => STR_TAG,
             Value::Num(_) => 1,
             Value::Bool(_) => 2,
             Value::Bytes(_) => 3,

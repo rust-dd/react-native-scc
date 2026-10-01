@@ -218,3 +218,39 @@ fn torn_batch_record_applies_nothing() {
     );
     assert_eq!(reopened.get("b"), None);
 }
+
+#[test]
+fn set_str_overwrites_any_value_and_clears_ttl() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path(), "str", fast_opts()).unwrap();
+    let events = Arc::new(Mutex::new(0usize));
+    let sink = events.clone();
+    store.subscribe(move |_| *sink.lock().unwrap() += 1);
+
+    store.set("n", Value::Num(1.0)).unwrap();
+    store.set_str("n", "now text").unwrap();
+    assert_eq!(store.get("n"), Some(Value::Str("now text".into())));
+
+    store
+        .set_with_ttl("t", Value::Str("expiring".into()), 30)
+        .unwrap();
+    store.set_str("t", "kept").unwrap();
+    std::thread::sleep(Duration::from_millis(60));
+    assert_eq!(store.get("t"), Some(Value::Str("kept".into())));
+
+    let long = "x".repeat(5000);
+    store.set_str("s", &long).unwrap();
+    store.set_str("s", "short").unwrap();
+    assert_eq!(store.get("s"), Some(Value::Str("short".into())));
+    store.set_str("s", &long).unwrap();
+    store.set_str("s", "ünnepi").unwrap();
+    assert_eq!(store.get("s"), Some(Value::Str("ünnepi".into())));
+    assert_eq!(*events.lock().unwrap(), 8);
+
+    store.close().unwrap();
+    let reopened = Store::open(dir.path(), "str", fast_opts()).unwrap();
+    assert_eq!(reopened.get("n"), Some(Value::Str("now text".into())));
+    assert_eq!(reopened.get("t"), Some(Value::Str("kept".into())));
+    assert_eq!(reopened.get("s"), Some(Value::Str("ünnepi".into())));
+    reopened.close().unwrap();
+}

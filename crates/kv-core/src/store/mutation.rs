@@ -34,6 +34,18 @@ impl Store {
         Ok(())
     }
 
+    pub fn set_str(&self, key: &str, value: &str) -> Result<()> {
+        record::validate(&Op::SetStr { key, value })?;
+        self.mutate(|log| {
+            if let Some(log) = log {
+                log.append(&Op::SetStr { key, value });
+            }
+            apply_set_str(&self.map, key, value);
+        })?;
+        self.listeners.notify(Some(key));
+        Ok(())
+    }
+
     /// Like `set`, but the key expires `ttl_ms` from now. Expired keys read
     /// as missing immediately; the background sweeper reclaims them.
     pub fn set_with_ttl(&self, key: &str, value: Value, ttl_ms: u64) -> Result<()> {
@@ -201,6 +213,25 @@ fn batch_subs(ops: &[BatchOp]) -> Vec<BatchSub<'_>> {
             BatchOp::Delete { key } => BatchSub::Delete { key },
         })
         .collect()
+}
+
+fn apply_set_str(map: &crate::ValueMap, key: &str, value: &str) {
+    let updated = map
+        .update_sync(key, |_, slot| {
+            slot.expires_at_ms = 0;
+            match &mut slot.value {
+                // Reusing a far larger buffer would pin memory the new value never needs.
+                Value::Str(existing) if existing.capacity() <= value.len().max(64) * 2 => {
+                    existing.clear();
+                    existing.push_str(value);
+                }
+                other => *other = Value::Str(CompactString::from(value)),
+            }
+        })
+        .is_some();
+    if !updated {
+        apply_set(map, key, Value::Str(CompactString::from(value)), 0);
+    }
 }
 
 fn apply_set(map: &crate::ValueMap, key: &str, value: Value, expires_at_ms: u64) {

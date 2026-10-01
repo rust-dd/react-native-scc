@@ -7,6 +7,11 @@ pub(crate) enum Op<'a> {
         key: &'a str,
         value: &'a Value,
     },
+    /// Encodes exactly like `Set` with `Value::Str`, without building a `Value` first.
+    SetStr {
+        key: &'a str,
+        value: &'a str,
+    },
     Delete {
         key: &'a str,
     },
@@ -86,6 +91,11 @@ pub(crate) fn validate(op: &Op) -> crate::Result<()> {
 fn encoded_payload_len(op: &Op) -> Option<usize> {
     match op {
         Op::Set { key, value } => encoded_set_len(key, value, 0),
+        Op::SetStr { key, value } => 1usize
+            .checked_add(4)?
+            .checked_add(key.len())?
+            .checked_add(1)?
+            .checked_add(value.len()),
         Op::Delete { key } => 1usize.checked_add(4)?.checked_add(key.len()),
         Op::Clear => Some(5),
         Op::SetTtl { key, value, .. } => encoded_set_len(key, value, 8),
@@ -141,6 +151,13 @@ pub(crate) fn encode_unsealed(op: &Op, out: &mut Vec<u8>) {
             out.extend_from_slice(key.as_bytes());
             out.push(value.tag());
             value.encode_into(out);
+        }
+        Op::SetStr { key, value } => {
+            out.push(0);
+            out.extend_from_slice(&(key.len() as u32).to_le_bytes());
+            out.extend_from_slice(key.as_bytes());
+            out.push(crate::value::STR_TAG);
+            out.extend_from_slice(value.as_bytes());
         }
         Op::Delete { key } => {
             out.push(1);
@@ -461,6 +478,21 @@ mod tests {
         zero.extend_from_slice(&0u32.to_le_bytes());
         zero.extend_from_slice(&[0u8; 4]);
         assert_eq!(decode(&zero), DecodeOutcome::Corrupt);
+    }
+
+    #[test]
+    fn set_str_encodes_like_a_string_set() {
+        let value = Value::Str("ünnep".into());
+        assert_eq!(
+            encode_one(&Op::SetStr {
+                key: "k",
+                value: "ünnep",
+            }),
+            encode_one(&Op::Set {
+                key: "k",
+                value: &value,
+            })
+        );
     }
 
     #[test]
