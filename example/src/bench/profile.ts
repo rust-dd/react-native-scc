@@ -7,7 +7,7 @@ import { createRng } from './stats'
 
 export async function runProfile(request: ProfileRequest): Promise<void> {
   const definition = throughputCases.find((entry) => entry.id === request.caseId)
-  if (definition === undefined || definition.listen === true) {
+  if (definition === undefined || definition.listeners !== undefined) {
     throw new Error(`case ${request.caseId} cannot be profiled`)
   }
   const rng = createRng(1)

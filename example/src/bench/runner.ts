@@ -57,7 +57,9 @@ async function measureThroughput(
 ): Promise<Record<Lib, number[]>> {
   const chunks = scaled(definition.chunks, harness.profile, 3)
   const first: Lib = harness.rng() < 0.5 ? 'scc' : 'mmkv'
-  const probe = definition.listen === true ? listenBoth(harness.stores) : undefined
+  const setup = definition.listeners
+  const probe =
+    setup === undefined ? undefined : listenBoth(harness.stores, setup.keys?.(data))
   const samples: Record<Lib, number[]> = { scc: [], mmkv: [] }
   const checksums: Record<Lib, number> = { scc: 0, mmkv: 0 }
   try {
@@ -71,7 +73,9 @@ async function measureThroughput(
         samples[lib].push(((performance.now() - startedAt) * 1e6) / operations)
       }
       if (lib === 'scc') settleScc(harness.stores.scc)
-      await probe?.drain(lib, definition.chunkSize * (chunks + 1))
+      if (probe !== undefined && setup !== undefined) {
+        await probe.drain(lib, setup.expected(data, definition.chunkSize * (chunks + 1)))
+      }
       await nextFrame()
     }
   } finally {

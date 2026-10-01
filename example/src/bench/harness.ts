@@ -93,14 +93,22 @@ export interface ListenerProbe {
   remove(): void
 }
 
-export function listenBoth(stores: Stores): ListenerProbe {
+export function listenBoth(stores: Stores, keys?: string[]): ListenerProbe {
   const delivered: Record<Lib, number> = { scc: 0, mmkv: 0 }
-  const scc = stores.scc.addOnValueChangedListener(() => {
-    delivered.scc++
-  })
-  const mmkv = stores.mmkv.addOnValueChangedListener(() => {
-    delivered.mmkv++
-  })
+  const subscriptions: Array<{ remove(): void }> = []
+  if (keys === undefined) {
+    subscriptions.push(stores.scc.addOnValueChangedListener(() => delivered.scc++))
+    subscriptions.push(stores.mmkv.addOnValueChangedListener(() => delivered.mmkv++))
+  } else {
+    for (const key of keys) {
+      subscriptions.push(stores.scc.addOnKeyChangedListener(key, () => delivered.scc++))
+      subscriptions.push(
+        stores.mmkv.addOnValueChangedListener((changed) => {
+          if (changed === key) delivered.mmkv++
+        })
+      )
+    }
+  }
   return {
     async drain(lib, expected) {
       const deadline = performance.now() + 10_000
@@ -113,8 +121,7 @@ export function listenBoth(stores: Stores): ListenerProbe {
       delivered[lib] = 0
     },
     remove() {
-      scc.remove()
-      mmkv.remove()
+      for (const subscription of subscriptions) subscription.remove()
     },
   }
 }

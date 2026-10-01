@@ -29,7 +29,7 @@ numbers, booleans, ~1 KiB JSON documents) and a 20k-key one (10k strings + 10k n
 | Means hiding stalls | Throughput keeps every 12-chunk timing (p95 chunk shown); latency reports p99. |
 | No uncertainty estimate | 10 throughput trials and 4 latency trials per launch; speedups carry a 95% bootstrap CI and are only called when the CI excludes 1×. |
 | Launch-to-launch variance | `scripts/bench-ios.mjs` runs several fresh launches and reports the min–max of the per-launch medians. |
-| Asymmetric listener semantics | Both libraries deliver change events asynchronously through Nitro; each sample waits until its own deliveries arrive. |
+| Asymmetric listener semantics | Both libraries deliver change events asynchronously through Nitro. Samples time the write calls; each library's deliveries are drained, untimed, before the other library runs. The 50-listener case subscribes the way each library's hooks do: SCC key listeners, MMKV one filtered listener per hook. |
 
 ## Known asymmetries and gaps
 

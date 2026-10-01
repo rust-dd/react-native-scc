@@ -271,12 +271,15 @@ function nativeCalls(native: SccKvInstance): NativeCalls {
   return typeof create === 'function' ? create.call(native) : native
 }
 
+type ListenerEntry = { listener: KVChangeListener }
+
 let defaultInstance: KV | undefined
 
 export class KV {
   private readonly native: SccKvInstance
   private readonly calls: NativeCalls
-  private readonly listeners = new Set<{ listener: KVChangeListener }>()
+  private readonly listeners = new Set<ListenerEntry>()
+  private readonly keyListeners = new Map<string, Set<ListenerEntry>>()
   private nativeSubscription: number | undefined
   private readonly keyPrefix: string
 
@@ -307,31 +310,85 @@ export class KV {
    * JS thread.
    */
   addOnValueChangedListener(listener: KVChangeListener): KVSubscription {
+    return this.subscribe(listener, undefined)
+  }
+
+  /** Like addOnValueChangedListener, but only for `key` (and clearAll, as null). */
+  addOnKeyChangedListener(key: string, listener: KVChangeListener): KVSubscription {
+    return this.subscribe(listener, key)
+  }
+
+  private subscribe(listener: KVChangeListener, key: string | undefined): KVSubscription {
     if (this.closed) throw new Error('Cannot subscribe to a closed KV instance')
     const entry = { listener }
-    this.listeners.add(entry)
+    const entries = key === undefined ? this.listeners : this.keyEntries(key)
+    entries.add(entry)
     try {
-      this.nativeSubscription ??= this.native.addListener((key) => {
-        const localKey = this.toLocalChangedKey(key ?? null)
-        if (localKey === undefined) return
-        for (const current of this.listeners) current.listener(localKey)
-      })
+      this.nativeSubscription ??= this.native.addListener(() => this.deliverChanges())
     } catch (error) {
-      this.listeners.delete(entry)
+      this.unsubscribe(entries, entry, key)
       throw error
     }
-    return {
-      remove: () => {
-        this.listeners.delete(entry)
-        if (
-          this.listeners.size === 0 &&
-          this.nativeSubscription !== undefined
-        ) {
-          this.native.removeListener(this.nativeSubscription)
-          this.nativeSubscription = undefined
-        }
-      },
+    return { remove: () => this.unsubscribe(entries, entry, key) }
+  }
+
+  private keyEntries(key: string): Set<ListenerEntry> {
+    let entries = this.keyListeners.get(key)
+    if (entries === undefined) {
+      entries = new Set()
+      this.keyListeners.set(key, entries)
     }
+    return entries
+  }
+
+  private unsubscribe(
+    entries: Set<ListenerEntry>,
+    entry: ListenerEntry,
+    key: string | undefined
+  ): void {
+    entries.delete(entry)
+    if (
+      key !== undefined &&
+      entries.size === 0 &&
+      this.keyListeners.get(key) === entries
+    ) {
+      this.keyListeners.delete(key)
+    }
+    if (
+      this.listeners.size === 0 &&
+      this.keyListeners.size === 0 &&
+      this.nativeSubscription !== undefined
+    ) {
+      this.native.removeListener(this.nativeSubscription)
+      this.nativeSubscription = undefined
+    }
+  }
+
+  private deliverChanges(): void {
+    const id = this.nativeSubscription
+    if (id === undefined) return
+    let failure: { error: unknown } | undefined
+    const notify = (entry: ListenerEntry, key: string | null) => {
+      try {
+        entry.listener(key)
+      } catch (error) {
+        failure ??= { error }
+      }
+    }
+    for (const changed of this.native.takeChanges(id)) {
+      const key = this.toLocalChangedKey(changed)
+      if (key === undefined) continue
+      for (const entry of this.listeners) notify(entry, key)
+      if (key === null) {
+        for (const entries of this.keyListeners.values()) {
+          for (const entry of entries) notify(entry, null)
+        }
+      } else {
+        const entries = this.keyListeners.get(key)
+        if (entries !== undefined) for (const entry of entries) notify(entry, key)
+      }
+    }
+    if (failure !== undefined) throw failure.error
   }
 
   /**
@@ -397,8 +454,7 @@ export class KV {
   ): KVSubscription {
     let selected!: S
     let initialized = false
-    const subscription = this.addOnValueChangedListener((changedKey) => {
-      if (changedKey !== null && changedKey !== key) return
+    const subscription = this.addOnKeyChangedListener(key, () => {
       const next = selector(this.getJSON<T>(key))
       if (!initialized || !equals(selected, next)) {
         initialized = true
@@ -552,6 +608,7 @@ export class KV {
       this.nativeSubscription = undefined
     }
     this.listeners.clear()
+    this.keyListeners.clear()
     this.native.close()
     this.closed = true
     if (defaultInstance === this) defaultInstance = undefined

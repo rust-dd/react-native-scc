@@ -22,11 +22,9 @@ export function atomWithKV<T>(key: string, initialValue: T, kv?: KV) {
         store.delete(k)
       },
       subscribe: (k, callback, fallback) => {
-        const subscription = store.addOnValueChangedListener((changed) => {
-          if (changed === null || changed === k) {
-            const value = store.getJSON<T>(k)
-            callback(value === undefined ? fallback : value)
-          }
+        const subscription = store.addOnKeyChangedListener(k, () => {
+          const value = store.getJSON<T>(k)
+          callback(value === undefined ? fallback : value)
         })
         return () => subscription.remove()
       },

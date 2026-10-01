@@ -33,6 +33,7 @@ namespace margelo::nitro::scckv {
       prototype.registerHybridMethod("close", &HybridSccKvInstanceSpec::close);
       prototype.registerHybridMethod("addListener", &HybridSccKvInstanceSpec::addListener);
       prototype.registerHybridMethod("removeListener", &HybridSccKvInstanceSpec::removeListener);
+      prototype.registerHybridMethod("takeChanges", &HybridSccKvInstanceSpec::takeChanges);
       prototype.registerHybridMethod("setStringTtl", &HybridSccKvInstanceSpec::setStringTtl);
       prototype.registerHybridMethod("setNumberTtl", &HybridSccKvInstanceSpec::setNumberTtl);
       prototype.registerHybridMethod("setBooleanTtl", &HybridSccKvInstanceSpec::setBooleanTtl);

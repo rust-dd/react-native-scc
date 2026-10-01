@@ -13,6 +13,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -164,10 +165,9 @@ public:
   // Nitro JS callbacks are safely invokable from any thread — they dispatch
   // onto the JS runtime. The trampoline may fire on the JS thread (sync
   // mutations) or an async pool thread; both funnel through that dispatch.
-  double addListener(
-      const std::function<void(const std::optional<std::string>&)>& listener) override {
+  double addListener(const std::function<void()>& onChange) override {
     auto box = std::make_unique<ListenerBox>();
-    box->fn = listener;
+    box->onChange = onChange;
     uint64_t id = scc_kv_subscribe(_handle, &listenerTrampoline, box.get());
     if (id == 0) throwLastError("addListener");
     _listeners[id] = std::move(box);
@@ -180,6 +180,16 @@ public:
     if (rc < 0) throwLastError("removeListener");
     _listeners.erase(native);
     return rc == 1;
+  }
+
+  std::vector<std::variant<nitro::NullType, std::string>> takeChanges(double id) override {
+    std::vector<std::variant<nitro::NullType, std::string>> changes;
+    auto found = _listeners.find(static_cast<uint64_t>(id));
+    if (found != _listeners.end()) {
+      std::lock_guard<std::mutex> lock(found->second->mutex);
+      changes.swap(found->second->pending);
+    }
+    return changes;
   }
 
   void setStringTtl(const std::string& key, const std::string& value, double ttlMs) override {
@@ -435,17 +445,25 @@ private:
   }
 
   struct ListenerBox {
-    std::function<void(const std::optional<std::string>&)> fn;
+    std::function<void()> onChange;
+    std::mutex mutex;
+    std::vector<std::variant<nitro::NullType, std::string>> pending;
   };
   std::unordered_map<uint64_t, std::unique_ptr<ListenerBox>> _listeners;
 
   static void listenerTrampoline(void* userData, const uint8_t* key, size_t keyLen) {
     auto* box = static_cast<ListenerBox*>(userData);
-    if (key == nullptr) {
-      box->fn(std::nullopt);
-    } else {
-      box->fn(std::string(reinterpret_cast<const char*>(key), keyLen));
+    bool first;
+    {
+      std::lock_guard<std::mutex> lock(box->mutex);
+      first = box->pending.empty();
+      if (key == nullptr) {
+        box->pending.emplace_back(nitro::NullType{});
+      } else {
+        box->pending.emplace_back(std::string(reinterpret_cast<const char*>(key), keyLen));
+      }
     }
+    if (first) box->onChange();
   }
 
   // HybridObject is a virtual base of the spec, so a static cast is not possible.

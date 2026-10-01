@@ -3,7 +3,7 @@ jest.mock(
   () => require('./mockNitro').mockNitroModule
 )
 
-import { resetStores } from './mockNitro'
+import { dispatchErrors, resetStores } from './mockNitro'
 import { createKV, getDefaultKV } from '../src/kv'
 
 const flushMicrotasks = () =>
@@ -437,4 +437,52 @@ test('closing the default store allows a fresh default instance', () => {
   expect(reopened).not.toBe(first)
   expect(reopened.getString('persisted')).toBe('value')
   reopened.close()
+})
+
+test('batched change events keep order and one event per write', async () => {
+  const kv = createKV({ id: 'batch-events' })
+  const events: Array<string | null> = []
+  kv.addOnValueChangedListener((key) => events.push(key))
+  kv.set('a', 1)
+  kv.set('b', 2)
+  kv.set('a', 3)
+  kv.clearAll()
+  await flushMicrotasks()
+  expect(events).toEqual(['a', 'b', 'a', null])
+})
+
+test('key listeners fire only for their key and clearAll', async () => {
+  const kv = createKV({ id: 'key-events' })
+  const user = kv.namespace('user')
+  const name: Array<string | null> = []
+  const other: Array<string | null> = []
+  const nameSub = user.addOnKeyChangedListener('name', (key) => name.push(key))
+  kv.addOnKeyChangedListener('other', (key) => other.push(key))
+  kv.set('user:name', 'Ada')
+  kv.set('user:age', 36)
+  kv.set('other', true)
+  kv.clearAll()
+  await flushMicrotasks()
+  expect(name).toEqual(['name', null])
+  expect(other).toEqual(['other', null])
+
+  nameSub.remove()
+  kv.set('user:name', 'Grace')
+  await flushMicrotasks()
+  expect(name).toHaveLength(2)
+})
+
+test('a throwing listener does not starve the others', async () => {
+  const kv = createKV({ id: 'throwing-listener' })
+  const seen: Array<string | null> = []
+  kv.addOnValueChangedListener(() => {
+    throw new Error('boom')
+  })
+  kv.addOnKeyChangedListener('k', (key) => seen.push(key))
+  kv.set('k', 1)
+  kv.set('k', 2)
+  await flushMicrotasks()
+  expect(seen).toEqual(['k', 'k'])
+  const messages = dispatchErrors.splice(0).map((error) => (error as Error).message)
+  expect(messages).toEqual(['boom'])
 })

@@ -30,6 +30,11 @@ export interface Verification {
   kind: 'string' | 'number' | 'boolean' | 'json'
 }
 
+export interface ListenerSetup {
+  keys?: (data: Dataset) => string[]
+  expected: (data: Dataset, writes: number) => number
+}
+
 export interface ThroughputCase {
   id: string
   scenario: Scenario
@@ -39,7 +44,7 @@ export interface ThroughputCase {
   chunkSize: number
   chunks: number
   opsPerCall: number
-  listen?: boolean
+  listeners?: ListenerSetup
   body(lib: Lib, stores: Stores, data: Dataset): Body
   verifies?: (data: Dataset) => Verification[]
 }
@@ -144,6 +149,7 @@ function batchEntries(data: Dataset): Record<string, string>[] {
   )
 }
 
+const HOOKED_KEYS = 50
 const RANDOM_HIT = 'random key · resident hit'
 const OVERWRITE = 'random existing key · value differs from the stored one'
 
@@ -358,13 +364,34 @@ export const throughputCases: ThroughputCase[] = [
     ...writeCase({
       id: 'set_str16_listener',
       label: 'set string · 16 B · 1 listener',
-      detail: 'one change listener per store; both deliver asynchronously',
+      detail: 'one change listener per store; async delivery is drained untimed',
       chunkSize: 1000,
       make: (store, data) => writeString(store, data.str16, data.p16),
       verify: (data) => ({ keys: data.str16.keys, kind: 'string' }),
     }),
     group: 'listener',
-    listen: true,
+    listeners: { expected: (_, writes) => writes },
+  },
+  {
+    ...writeCase({
+      id: 'set_str16_hooks',
+      label: 'set string · 16 B · 50 key listeners',
+      detail: 'SCC addOnKeyChangedListener vs MMKV per-hook filtered listeners; delivery untimed',
+      chunkSize: 1000,
+      make: (store, data) => writeString(store, data.str16, data.p16),
+      verify: (data) => ({ keys: data.str16.keys, kind: 'string' }),
+    }),
+    group: 'listener',
+    listeners: {
+      keys: (data) => data.str16.keys.slice(0, HOOKED_KEYS),
+      expected: (data, writes) => {
+        let hits = 0
+        for (let position = 0; position < writes; position++) {
+          if (data.str16.order[position & ORDER_MASK]! < HOOKED_KEYS) hits++
+        }
+        return hits
+      },
+    },
   },
   readCase({
     id: 'large_get_str16',

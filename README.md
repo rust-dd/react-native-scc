@@ -17,7 +17,7 @@ The design goal is simple: **every read is a RAM lookup, every write is durable,
 - **Transactions + namespaces** — crash-atomic sync commits, prefix helpers, and scoped KV views
 - **Encryption at rest** — opt-in ChaCha20-Poly1305 per instance, snapshot and WAL both encrypted
 - **TTL + eviction** — per-key expiry with a background sweeper, optional `maxEntries` cap
-- **Native change events** — listeners, selectors, and hooks react to writes made through any handle of the same store
+- **Native change events** — batched delivery and key-scoped listeners; selectors and hooks react to writes made through any handle of the same store
 - **React hooks** — `useKVString`, `useKVNumber`, `useKVBoolean`, `useKVBuffer`, `useKVJSON`
 - **State-manager adapters** — zustand persist, jotai `atomWithKV`, redux-persist engine as subpath exports
 - **Zero-config persistence** — storage lands in the platform app-data directory (iOS: Application Support, Android: `filesDir`)
@@ -205,7 +205,7 @@ const theme = useKVSelector<{ theme?: string }, string | undefined>(
 
 ### Change listener
 
-The listener fires for every mutation of the underlying store, from any handle. `key` is `null` after `clearAll` ("everything changed"). Delivery is asynchronous on the JS thread.
+The listener fires for every mutation of the underlying store, from any handle. `key` is `null` after `clearAll` ("everything changed"). Delivery is asynchronous on the JS thread: changes queue natively and cross into JS as one batch per burst, in write order.
 
 ```ts
 const sub = kv.addOnValueChangedListener((key) => {
@@ -214,7 +214,13 @@ const sub = kv.addOnValueChangedListener((key) => {
 sub.remove()
 ```
 
-Selectors sit on top of the same listener and only fire when the selected value changes:
+`addOnKeyChangedListener` fires only for one key (and for `clearAll`). Key listeners are indexed, so a write only reaches the listeners of its own key; hooks, `observeJSON`, and the jotai adapter subscribe this way:
+
+```ts
+const sub = kv.addOnKeyChangedListener('settings', () => console.log('settings changed'))
+```
+
+Selectors sit on top of a key listener and only fire when the selected value changes:
 
 ```ts
 const sub = kv.observeJSON(
@@ -277,6 +283,8 @@ const persistedReducer = persistReducer(
 | `namespace(prefix)` | — | scoped `KV` view |
 | `getKeysByPrefix(prefix)` | — | `string[]` |
 | `deleteByPrefix(prefix)` | — | `number` |
+| `addOnValueChangedListener(listener)` | — | `KVSubscription` |
+| `addOnKeyChangedListener(key, listener)` | — | `KVSubscription` |
 | `observeJSON(key, selector, listener)` | — | `KVSubscription` |
 | `getString(key)` | `getStringAsync` | `string \| undefined` |
 | `getNumber(key)` | `getNumberAsync` | `number \| undefined` |

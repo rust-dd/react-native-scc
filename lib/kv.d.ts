@@ -19,7 +19,9 @@ export interface KVTransaction {
 export declare class KV {
     private readonly ownsNative;
     private readonly native;
+    private readonly calls;
     private readonly listeners;
+    private readonly keyListeners;
     private nativeSubscription;
     private readonly keyPrefix;
     private closed;
@@ -31,6 +33,12 @@ export declare class KV {
      * JS thread.
      */
     addOnValueChangedListener(listener: KVChangeListener): KVSubscription;
+    /** Like addOnValueChangedListener, but only for `key` (and clearAll, as null). */
+    addOnKeyChangedListener(key: string, listener: KVChangeListener): KVSubscription;
+    private subscribe;
+    private keyEntries;
+    private unsubscribe;
+    private deliverChanges;
     /**
      * Stages reads and writes through `tx`, then commits every staged write as one
      * crash-atomic native batch (one WAL record — all of it survives a crash, or

@@ -42,9 +42,9 @@ class KVSnapshotSource<T> {
     const before = this.getSnapshot()
     this.listeners.add(listener)
     try {
-      this.subscription ??= this.store.addOnValueChangedListener((changedKey) => {
-        if (changedKey === null || changedKey === this.key) this.invalidate()
-      })
+      this.subscription ??= this.store.addOnKeyChangedListener(this.key, () =>
+        this.invalidate()
+      )
     } catch (error) {
       this.listeners.delete(listener)
       throw error

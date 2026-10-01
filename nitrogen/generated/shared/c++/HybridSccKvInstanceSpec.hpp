@@ -72,8 +72,9 @@ namespace margelo::nitro::scckv {
       virtual void flush() = 0;
       virtual double size() = 0;
       virtual void close() = 0;
-      virtual double addListener(const std::function<void(const std::optional<std::string>& /* key */)>& listener) = 0;
+      virtual double addListener(const std::function<void()>& onChange) = 0;
       virtual bool removeListener(double id) = 0;
+      virtual std::vector<std::variant<nitro::NullType, std::string>> takeChanges(double id) = 0;
       virtual void setStringTtl(const std::string& key, const std::string& value, double ttlMs) = 0;
       virtual void setNumberTtl(const std::string& key, double value, double ttlMs) = 0;
       virtual void setBooleanTtl(const std::string& key, bool value, double ttlMs) = 0;

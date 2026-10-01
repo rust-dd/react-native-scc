@@ -20,8 +20,9 @@ export interface SccKvInstance extends HybridObject<{
     flush(): void;
     size(): number;
     close(): void;
-    addListener(listener: (key?: string) => void): number;
+    addListener(onChange: () => void): number;
     removeListener(id: number): boolean;
+    takeChanges(id: number): (string | null)[];
     setStringTtl(key: string, value: string, ttlMs: number): void;
     setNumberTtl(key: string, value: number, ttlMs: number): void;
     setBooleanTtl(key: string, value: boolean, ttlMs: number): void;

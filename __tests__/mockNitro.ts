@@ -1,4 +1,4 @@
-type Listener = (key?: string) => void
+type Listener = { onChange: () => void; pending: (string | null)[] }
 
 class FakeStore {
   map = new Map<string, { tag: number; value: unknown; expiresAt?: number }>()
@@ -7,10 +7,21 @@ class FakeStore {
 
   notify(key: string | undefined) {
     for (const listener of this.listeners.values()) {
-      queueMicrotask(() => listener(key))
+      listener.pending.push(key ?? null)
+      if (listener.pending.length === 1) {
+        queueMicrotask(() => {
+          try {
+            listener.onChange()
+          } catch (error) {
+            dispatchErrors.push(error)
+          }
+        })
+      }
     }
   }
 }
+
+export const dispatchErrors: unknown[] = []
 
 const stores = new Map<string, FakeStore>()
 
@@ -76,12 +87,19 @@ function mockMakeInstance(store: FakeStore) {
     size: () =>
       [...store.map.values()].filter((entry) => !isExpired(entry)).length,
     close: () => {},
-    addListener: (listener: Listener) => {
+    addListener: (onChange: () => void) => {
       const id = store.nextListenerId++
-      store.listeners.set(id, listener)
+      store.listeners.set(id, { onChange, pending: [] })
       return id
     },
     removeListener: (id: number) => store.listeners.delete(id),
+    takeChanges: (id: number) => {
+      const listener = store.listeners.get(id)
+      if (listener === undefined) return []
+      const changes = listener.pending
+      listener.pending = []
+      return changes
+    },
     setStringTtl: (k: string, v: string, ttl: number) => set(k, 0, v, ttl),
     setNumberTtl: (k: string, v: number, ttl: number) => set(k, 1, v, ttl),
     setBooleanTtl: (k: string, v: boolean, ttl: number) => set(k, 2, v, ttl),
