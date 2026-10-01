@@ -190,6 +190,24 @@ pub(crate) fn map_file(path: &Path) -> Result<Option<memmap2::Mmap>> {
     Ok(Some(mmap))
 }
 
+pub(crate) fn capacity_hint(path: &Path) -> Result<usize> {
+    let Some(mapped) = map_file(path)? else {
+        return Ok(0);
+    };
+    let data: &[u8] = &mapped;
+    let (format, mut offset) = crypto::parse_header(data);
+    if matches!(format, FileFormat::V1 { encrypted: true }) {
+        return Ok(data.len() / 64);
+    }
+    let mut count = 0;
+    while let Some(header) = data.get(offset..offset.saturating_add(8)) {
+        let payload_len = u32::from_le_bytes(header[..4].try_into().unwrap()) as usize;
+        offset = offset.saturating_add(8).saturating_add(payload_len);
+        count += 1;
+    }
+    Ok(count)
+}
+
 pub(crate) fn check_key_matches(
     path: &Path,
     file_encrypted: bool,
@@ -273,9 +291,9 @@ mod tests {
 
     fn sample_map() -> crate::ValueMap {
         let map = crate::new_value_map();
-        let _ = map.insert_sync("a".to_string(), crate::slot(Value::Num(1.0)));
-        let _ = map.insert_sync("b".to_string(), crate::slot(Value::Str("two".into())));
-        let _ = map.insert_sync("c".to_string(), crate::slot(Value::Bytes(vec![3, 3, 3])));
+        let _ = map.insert_sync("a".into(), crate::slot(Value::Num(1.0)));
+        let _ = map.insert_sync("b".into(), crate::slot(Value::Str("two".into())));
+        let _ = map.insert_sync("c".into(), crate::slot(Value::Bytes(vec![3, 3, 3])));
         map
     }
 
@@ -298,6 +316,15 @@ mod tests {
     }
 
     #[test]
+    fn capacity_hint_counts_plaintext_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.snap");
+        assert_eq!(capacity_hint(&path).unwrap(), 0);
+        write_atomic(&path, &sample_map(), None).unwrap();
+        assert_eq!(capacity_hint(&path).unwrap(), 3);
+    }
+
+    #[test]
     fn missing_file_is_empty() {
         let dir = tempfile::tempdir().unwrap();
         let map = crate::new_value_map();
@@ -311,7 +338,7 @@ mod tests {
         let path = dir.path().join("test.snap");
         write_atomic(&path, &sample_map(), None).unwrap();
         let small = crate::new_value_map();
-        let _ = small.insert_sync("only".to_string(), crate::slot(Value::Bool(true)));
+        let _ = small.insert_sync("only".into(), crate::slot(Value::Bool(true)));
         write_atomic(&path, &small, None).unwrap();
         let loaded = crate::new_value_map();
         load(&path, &loaded, None).unwrap();

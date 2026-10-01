@@ -155,7 +155,9 @@ impl Store {
         }
         let cipher = opts.encryption_key.map(|k| Arc::new(Cipher::new(&k)));
         let listeners = Arc::new(Listeners::new());
-        let map = Arc::new(crate::new_value_map());
+        let map = Arc::new(crate::new_value_map_with_capacity(snapshot::capacity_hint(
+            &snap_path,
+        )?));
         let compact_gate = Arc::new(RwLock::new(()));
         let snap_len = snapshot::load(&snap_path, &map, cipher.as_deref())?;
         let wal_len = replay_wal(&wal_path, &map, cipher.as_deref())?;
@@ -253,7 +255,7 @@ impl Store {
         let mut out = Vec::with_capacity(self.map.len());
         self.map.iter_sync(|k, slot| {
             if !slot.is_expired(now) {
-                out.push(k.clone());
+                out.push(k.to_string());
             }
             true
         });

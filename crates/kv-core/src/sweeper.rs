@@ -83,7 +83,7 @@ pub(crate) fn spawn(
                 }
             }
             for key in removed {
-                listeners.notify(Some(&key));
+                listeners.notify(Some(key.as_str()));
             }
         }
     });

@@ -48,10 +48,14 @@ pub(crate) fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-pub(crate) type ValueMap = scc::HashMap<String, Slot, FastState>;
+pub(crate) type ValueMap = scc::HashMap<CompactString, Slot, FastState>;
 
 pub(crate) fn new_value_map() -> ValueMap {
     ValueMap::with_hasher(FastState::default())
+}
+
+pub(crate) fn new_value_map_with_capacity(capacity: usize) -> ValueMap {
+    ValueMap::with_capacity_and_hasher(capacity, FastState::default())
 }
 
 /// Selects keys to reclaim in one sweep, split by why they are doomed:
@@ -64,9 +68,9 @@ pub(crate) fn compute_doomed(
     map: &ValueMap,
     now: u64,
     max_entries: Option<usize>,
-) -> (Vec<String>, Vec<String>) {
+) -> (Vec<CompactString>, Vec<CompactString>) {
     let track_live = max_entries.is_some();
-    let mut expired: Vec<String> = Vec::new();
+    let mut expired: Vec<CompactString> = Vec::new();
     let mut live: usize = 0;
     map.iter_sync(|k, slot| {
         if slot.is_expired(now) {
@@ -78,7 +82,7 @@ pub(crate) fn compute_doomed(
         }
         track_live || expired.len() < 4096
     });
-    let mut evicted: Vec<String> = Vec::new();
+    let mut evicted: Vec<CompactString> = Vec::new();
     if let Some(max) = max_entries
         && live > max
     {

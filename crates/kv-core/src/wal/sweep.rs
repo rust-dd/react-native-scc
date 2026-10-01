@@ -35,7 +35,7 @@ impl Writer {
             take_logged(&mut log, &mut self.pending);
         }
         for key in removed {
-            self.cfg.listeners.notify(Some(&key));
+            self.cfg.listeners.notify(Some(key.as_str()));
         }
     }
 }

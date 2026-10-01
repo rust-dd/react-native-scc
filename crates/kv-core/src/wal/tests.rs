@@ -112,7 +112,7 @@ fn compaction_truncates_wal_and_writes_snapshot() {
     let wal_path = cfg.wal_path.clone();
     let snap_path = cfg.snap_path.clone();
     let map = Arc::new(crate::new_value_map());
-    let _ = map.insert_sync("final".to_string(), crate::slot(Value::Str("state".into())));
+    let _ = map.insert_sync("final".into(), crate::slot(Value::Str("state".into())));
     let handle = WalHandle::spawn(cfg, map.clone(), 0, 0).unwrap();
     for i in 0..50 {
         append_set(&handle, "hot", Value::Num(i as f64)).unwrap();

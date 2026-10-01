@@ -143,7 +143,7 @@ impl Store {
                     apply_set(&self.map, key, value.clone(), 0);
                     (key, true)
                 }
-                BatchOp::Delete { key } => (key, self.map.remove_sync(key).is_some()),
+                BatchOp::Delete { key } => (key, self.map.remove_sync(key.as_str()).is_some()),
             };
             if collect && changed {
                 notify.push(key.as_str().into());
@@ -163,7 +163,7 @@ impl Store {
                     apply_set_owned(&self.map, key, value, 0);
                 }
                 BatchOp::Delete { key } => {
-                    let changed = self.map.remove_sync(&key).is_some();
+                    let changed = self.map.remove_sync(key.as_str()).is_some();
                     if collect && changed {
                         notify.push(key.into());
                     }
@@ -245,7 +245,7 @@ fn apply_set(map: &crate::ValueMap, key: &str, value: Value, expires_at_ms: u64)
         })
         .is_some();
     if !updated {
-        match map.entry_sync(key.to_string()) {
+        match map.entry_sync(CompactString::from(key)) {
             scc::hash_map::Entry::Occupied(mut o) => {
                 *o.get_mut() = slot.take().expect("slot consumed twice")
             }
@@ -262,12 +262,12 @@ fn apply_set_owned(map: &crate::ValueMap, key: String, value: Value, expires_at_
         expires_at_ms,
     });
     let updated = map
-        .update_sync(&key, |_, existing| {
+        .update_sync(key.as_str(), |_, existing| {
             *existing = slot.take().expect("slot consumed twice")
         })
         .is_some();
     if !updated {
-        match map.entry_sync(key) {
+        match map.entry_sync(CompactString::from(key)) {
             scc::hash_map::Entry::Occupied(mut o) => {
                 *o.get_mut() = slot.take().expect("slot consumed twice")
             }

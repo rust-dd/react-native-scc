@@ -1,3 +1,5 @@
+use compact_str::CompactString;
+
 use crate::value::Value;
 
 pub(crate) const MAX_PAYLOAD: u32 = 64 * 1024 * 1024;
@@ -33,8 +35,8 @@ pub(crate) enum BatchSub<'a> {
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum OwnedBatchSub {
-    Set { key: String, value: Value },
-    Delete { key: String },
+    Set { key: CompactString, value: Value },
+    Delete { key: CompactString },
 }
 
 impl<'a> BatchSub<'a> {
@@ -50,15 +52,15 @@ impl<'a> BatchSub<'a> {
 #[derive(Debug, PartialEq)]
 pub(crate) enum OwnedOp {
     Set {
-        key: String,
+        key: CompactString,
         value: Value,
     },
     Delete {
-        key: String,
+        key: CompactString,
     },
     Clear,
     SetTtl {
-        key: String,
+        key: CompactString,
         value: Value,
         expires_at_ms: u64,
     },
@@ -271,12 +273,12 @@ fn parse_payload(payload: &[u8]) -> Option<OwnedOp> {
             let tag = *payload.get(key_end)?;
             let value = Value::decode(tag, &payload[key_end + 1..])?;
             Some(OwnedOp::Set {
-                key: key.to_string(),
+                key: CompactString::from(key),
                 value,
             })
         }
         1 if payload.len() == key_end => Some(OwnedOp::Delete {
-            key: key.to_string(),
+            key: CompactString::from(key),
         }),
         2 if key_len == 0 && payload.len() == 5 => Some(OwnedOp::Clear),
         3 => {
@@ -288,7 +290,7 @@ fn parse_payload(payload: &[u8]) -> Option<OwnedOp> {
             let tag = payload[ttl_end];
             let value = Value::decode(tag, &payload[ttl_end + 1..])?;
             Some(OwnedOp::SetTtl {
-                key: key.to_string(),
+                key: CompactString::from(key),
                 value,
                 expires_at_ms,
             })
@@ -308,7 +310,7 @@ fn parse_batch(mut rest: &[u8]) -> Option<Vec<OwnedBatchSub>> {
         let kind = *rest.first()?;
         let key_len = u32::from_le_bytes(rest.get(1..5)?.try_into().ok()?) as usize;
         let key_end = 5usize.checked_add(key_len)?;
-        let key = std::str::from_utf8(rest.get(5..key_end)?).ok()?.to_string();
+        let key = CompactString::from(std::str::from_utf8(rest.get(5..key_end)?).ok()?);
         match kind {
             0 => {
                 ops.push(OwnedBatchSub::Delete { key });
@@ -358,7 +360,7 @@ pub(crate) fn apply(map: &crate::ValueMap, op: OwnedOp) {
     }
 }
 
-fn insert_slot(map: &crate::ValueMap, key: String, value: Value, expires_at_ms: u64) {
+fn insert_slot(map: &crate::ValueMap, key: CompactString, value: Value, expires_at_ms: u64) {
     let slot = crate::Slot {
         value,
         expires_at_ms,
