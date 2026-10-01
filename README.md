@@ -4,7 +4,7 @@
 [![license](https://img.shields.io/npm/l/react-native-scc-storage)](https://github.com/rust-dd/react-native-scc/blob/main/LICENSE)
 [![platforms](https://img.shields.io/badge/platforms-iOS%20%7C%20Android-lightgrey)](https://github.com/rust-dd/react-native-scc)
 
-Ultra-low-latency, persistent key-value storage for React Native and Expo. The core is written in Rust on top of [`scc`](https://crates.io/crates/scc) (a lock-free concurrent hash map), and it reaches JavaScript through [Nitro Modules](https://nitro.margelo.com), so a call from JS to Rust costs nanoseconds, not microseconds.
+Ultra-low-latency, persistent key-value storage for React Native and Expo. The core is written in Rust on top of [`scc`](https://crates.io/crates/scc) (a scalable concurrent hash map), and it reaches JavaScript through [Nitro Modules](https://nitro.margelo.com), so a call from JS to Rust costs nanoseconds, not microseconds.
 
 This project is also a statement of intent: **bringing Rust closer to React Native.** A Rust core behind Nitro Modules ships as an ordinary npm package — no toolchain for consumers, no compromise on performance — and this library is the proof that the pattern can go head-to-head with established C++ storage libraries.
 
@@ -283,18 +283,18 @@ Reading a key that holds a different type returns `undefined` (matching react-na
 
 ## Durability model
 
-Writes update the in-memory map synchronously, then stream to a write-ahead log on a dedicated background thread. The writer batches records into group commits (8 ms or 128 KiB, whichever comes first). With `durability: 'relaxed'` (default) the log is fsynced about once per second; with `'strict'` every group commit is fsynced. `flush()` / `flushAsync()` is the explicit barrier: it returns only after everything written so far is on disk.
+Writes update the in-memory map and append their record to an in-process log under a single lock; a dedicated background thread checksums the records and writes them to the write-ahead log in group commits (at most every 8 ms, sooner past 128 KiB). The writer keeps polling for 250 ms after its last input, so writes inside a burst never pay a thread wake-up. With `durability: 'relaxed'` (default) the log is fsynced about once per second; with `'strict'` every group commit is fsynced. `flush()` / `flushAsync()` is the explicit barrier: it returns only after everything written so far is on disk.
 
-On restart the store recovers from snapshot + WAL replay. Every record carries a CRC32; a torn tail from a hard kill is truncated and recovery continues — committed data is never lost or corrupted. When the WAL outgrows `max(4 MiB, 2 × snapshot size)`, the background writer compacts it into an atomically replaced snapshot, keeping recovery files bounded without moving disk I/O onto the JS thread.
+On restart the store recovers from snapshot + WAL replay. Every record carries a CRC32; a torn tail from a hard kill is truncated and recovery continues — committed data is never lost or corrupted. When the WAL outgrows `max(4 MiB, 2 × snapshot size)`, the background writer compacts it into an atomically replaced snapshot, keeping recovery files bounded without moving disk I/O onto the JS thread. Transactions wait for a compaction only while the map is captured in memory, never across its fsyncs.
 
 ## Architecture
 
 ```
 TypeScript (KV class, hooks, adapters)
   └─ Nitro Modules (JSI, sync calls, zero-copy where possible)
-      └─ C++ HybridObjects
+      └─ C++ HybridObjects (hot get/set/contains/delete: raw JSI host functions)
           └─ C FFI (cbindgen, panic-safe boundary)
-              └─ Rust core: scc::HashMap (lock-free reads) + WAL writer thread
+              └─ Rust core: scc::HashMap (per-bucket locks) + WAL writer thread
 ```
 
 The Rust core is an independent crate (`crates/kv-core`) with its own test suite: crash-recovery tests that truncate the WAL at every byte offset, multi-threaded stress tests racing writers against compaction, and criterion benchmarks. The C ABI layer (`crates/kv-ffi`) wraps every entry point in `catch_unwind`, so a Rust panic can never unwind across the language boundary.
