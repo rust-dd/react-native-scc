@@ -12,12 +12,15 @@ import {
   type BenchmarkProgress,
   type BenchmarkReport,
 } from './src/benchmark'
+import { profileRequest, shouldAutorunBenchmark } from './src/bench/launch'
+import { runProfile } from './src/bench/profile'
 import { Demos } from './src/demos'
 import { runSelfTest, type SelfTestResult } from './src/self-test'
 import { BenchmarkSection, SelfTestSection } from './src/sections'
 import { palettes, styles } from './src/theme'
 
-const autorunBenchmark = process.env.EXPO_PUBLIC_SCC_AUTORUN_BENCHMARK === '1'
+const autorunBenchmark = shouldAutorunBenchmark()
+const profiling = profileRequest()
 
 export default function App() {
   const colorScheme = useColorScheme()
@@ -102,6 +105,12 @@ export default function App() {
   )
 
   useEffect(() => {
+    if (profiling !== undefined) {
+      runProfile(profiling).catch((error: unknown) =>
+        console.error(`SCC_PROFILE_FAIL: ${String(error)}`)
+      )
+      return
+    }
     void executeSelfTest(autorunBenchmark)
     return () => {
       selfTestRun.current += 1

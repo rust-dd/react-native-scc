@@ -1,64 +1,94 @@
 import { Text, View } from 'react-native'
+import type { Interval } from './bench/stats'
 import type {
-  BenchmarkCase,
   BenchmarkProgress,
   BenchmarkReport,
+  Diagnostic,
+  LatencyResult,
+  ThroughputResult,
 } from './benchmark'
 import type { SelfTestResult } from './self-test'
 import { type Palette, styles } from './theme'
 import { Card, PillButton } from './ui'
 
 function formatNanoseconds(nanoseconds: number): string {
-  return nanoseconds >= 1_000
-    ? `${(nanoseconds / 1_000).toFixed(1)} µs`
-    : `${nanoseconds.toFixed(0)} ns`
+  if (nanoseconds >= 1_000_000) return `${(nanoseconds / 1_000_000).toFixed(1)} ms`
+  if (nanoseconds >= 1_000) {
+    return `${(nanoseconds / 1_000).toFixed(nanoseconds >= 10_000 ? 0 : 1)} µs`
+  }
+  return `${nanoseconds.toFixed(0)} ns`
 }
 
-function BenchmarkRow({ result, t }: { result: BenchmarkCase; t: Palette }) {
-  const max = Math.max(result.scc, result.mmkv, 1)
-  const isTie = Math.abs(result.scc - result.mmkv) / max < 0.02
-  const sccIsFaster = result.scc < result.mmkv
-  const ratio = sccIsFaster
-    ? result.mmkv / result.scc
-    : result.scc / result.mmkv
-  const chipColor = isTie ? t.sub : sccIsFaster ? t.good : t.bad
-  const chipBackground = isTie ? t.track : sccIsFaster ? t.goodSoft : t.badSoft
-  const verdict = isTie
-    ? '≈ tie'
-    : `${ratio.toFixed(ratio < 2 ? 2 : 1)}× SCC ${sccIsFaster ? 'faster' : 'slower'}`
+function formatDiagnostic(diagnostic: Diagnostic): string {
+  if (diagnostic.unit === 'ns/op') return formatNanoseconds(diagnostic.median)
+  return `${diagnostic.median.toFixed(diagnostic.median < 10 ? 2 : 1)} ms`
+}
+
+type Tone = 'good' | 'bad' | 'neutral'
+
+function verdict(speedup: Interval): { label: string; tone: Tone } {
+  if (speedup.low > 1) {
+    return { label: `${speedup.estimate.toFixed(2)}× SCC faster`, tone: 'good' }
+  }
+  if (speedup.high < 1) {
+    return { label: `${(1 / speedup.estimate).toFixed(2)}× SCC slower`, tone: 'bad' }
+  }
+  return { label: 'no clear difference', tone: 'neutral' }
+}
+
+function intervalText(speedup: Interval): string {
+  return `95% CI ${speedup.low.toFixed(2)}–${speedup.high.toFixed(2)}×`
+}
+
+function ComparisonRow({
+  label,
+  detail,
+  notes,
+  scc,
+  mmkv,
+  speedup,
+  t,
+}: {
+  label: string
+  detail: string
+  notes: string[]
+  scc: number
+  mmkv: number
+  speedup: Interval
+  t: Palette
+}) {
+  const max = Math.max(scc, mmkv, 1)
+  const { label: verdictLabel, tone } = verdict(speedup)
+  const chipColor = tone === 'good' ? t.good : tone === 'bad' ? t.bad : t.sub
+  const chipBackground =
+    tone === 'good' ? t.goodSoft : tone === 'bad' ? t.badSoft : t.track
 
   return (
     <View
-      accessibilityLabel={`${result.label}. SCC ${formatNanoseconds(result.scc)}, MMKV ${formatNanoseconds(result.mmkv)}. ${verdict}`}
+      accessibilityLabel={`${label}. SCC ${formatNanoseconds(scc)}, MMKV ${formatNanoseconds(mmkv)}. ${verdictLabel}, ${intervalText(speedup)}`}
       accessible
       style={styles.benchRow}
     >
       <View style={styles.benchHeader}>
         <View style={styles.benchTitleWrap}>
-          <Text style={[styles.benchName, { color: t.ink }]}>
-            {result.label}
-          </Text>
-          <Text style={[styles.benchDetail, { color: t.faint }]}>
-            {result.detail}
-          </Text>
-          {result.operationsPerCall > 1 && (
-            <Text style={[styles.benchDetail, { color: t.faint }]}>
-              total per call · SCC{' '}
-              {formatNanoseconds(result.scc * result.operationsPerCall)} · MMKV{' '}
-              {formatNanoseconds(result.mmkv * result.operationsPerCall)}
+          <Text style={[styles.benchName, { color: t.ink }]}>{label}</Text>
+          <Text style={[styles.benchDetail, { color: t.faint }]}>{detail}</Text>
+          {notes.map((note) => (
+            <Text key={note} style={[styles.benchDetail, { color: t.faint }]}>
+              {note}
             </Text>
-          )}
+          ))}
         </View>
         <View style={[styles.chip, { backgroundColor: chipBackground }]}>
           <Text style={[styles.chipLabel, { color: chipColor }]}>
-            {verdict}
+            {verdictLabel}
           </Text>
         </View>
       </View>
       {(
         [
-          ['scc', result.scc, t.accent],
-          ['mmkv', result.mmkv, t.mmkv],
+          ['scc', scc, t.accent],
+          ['mmkv', mmkv, t.mmkv],
         ] as const
       ).map(([series, value, color]) => {
         const width = `${Math.max(1, (value / max) * 100)}%` as `${number}%`
@@ -77,6 +107,68 @@ function BenchmarkRow({ result, t }: { result: BenchmarkCase; t: Palette }) {
         )
       })}
     </View>
+  )
+}
+
+function ThroughputRow({ result, t }: { result: ThroughputResult; t: Palette }) {
+  const notes = [
+    `${intervalText(result.speedup)} · p95 chunk SCC ${formatNanoseconds(result.scc.p95Chunk)} · MMKV ${formatNanoseconds(result.mmkv.p95Chunk)}`,
+  ]
+  if (result.opsPerCall > 1) {
+    notes.push(
+      `per call · SCC ${formatNanoseconds(result.scc.median * result.opsPerCall)} · MMKV ${formatNanoseconds(result.mmkv.median * result.opsPerCall)}`
+    )
+  }
+  return (
+    <ComparisonRow
+      detail={result.detail}
+      label={result.label}
+      mmkv={result.mmkv.median}
+      notes={notes}
+      scc={result.scc.median}
+      speedup={result.speedup}
+      t={t}
+    />
+  )
+}
+
+function LatencyRow({ result, t }: { result: LatencyResult; t: Palette }) {
+  return (
+    <ComparisonRow
+      detail={`${result.detail} · ~${result.gapMs.toFixed(1)} ms idle`}
+      label={result.label}
+      mmkv={result.mmkv.p50}
+      notes={[
+        `p50 ${intervalText(result.speedupP50)}`,
+        `p99 · SCC ${formatNanoseconds(result.scc.p99)} · MMKV ${formatNanoseconds(result.mmkv.p99)} · ${verdict(result.speedupP99).label}`,
+      ]}
+      scc={result.scc.p50}
+      speedup={result.speedupP50}
+      t={t}
+    />
+  )
+}
+
+function DiagnosticRow({ diagnostic, t }: { diagnostic: Diagnostic; t: Palette }) {
+  return (
+    <View
+      accessibilityLabel={`${diagnostic.label}: ${formatDiagnostic(diagnostic)}. ${diagnostic.detail}`}
+      accessible
+      style={styles.testRow}
+    >
+      <Text style={[styles.testName, { color: t.sub }]}>{diagnostic.label}</Text>
+      <Text style={[styles.testDetail, { color: t.ink }]}>
+        {formatDiagnostic(diagnostic)}
+      </Text>
+    </View>
+  )
+}
+
+function GroupTitle({ title, t }: { title: string; t: Palette }) {
+  return (
+    <Text accessibilityRole="header" style={[styles.benchGroup, { color: t.faint }]}>
+      {title}
+    </Text>
   )
 }
 
@@ -161,12 +253,15 @@ function BenchmarkMetadataText({
   t: Palette
 }) {
   const metadata = report.metadata
+  const libraries = metadata.libraries
   return (
     <Text style={[styles.metadata, { color: t.faint }]}>
-      {metadata.platform} {metadata.platformVersion} · {metadata.buildMode} ·{' '}
-      {metadata.trials}-trial median · {metadata.seededKeys} seeded keys ·{' '}
-      fresh SCC store/trial · sync API latency · relaxed WAL · drain outside
-      timing ·{' '}
+      {metadata.platform} {metadata.platformVersion} · {metadata.buildMode} · RN{' '}
+      {libraries.reactNative} · Hermes {metadata.hermes ?? 'n/a'} · SCC{' '}
+      {libraries.scc} · MMKV {libraries.mmkv} · Nitro {libraries.nitro} ·{' '}
+      {metadata.profile} profile: {metadata.throughputTrials} throughput /{' '}
+      {metadata.latencyTrials} latency trials, randomized order · timer{' '}
+      {metadata.timerResolutionNs.toFixed(0)} ns ·{' '}
       {new Date(metadata.createdAt).toLocaleString()}
     </Text>
   )
@@ -192,10 +287,12 @@ export function BenchmarkSection({
       ? 0
       : progress.completed / progress.total
   const progressWidth = `${Math.max(2, progressRatio * 100)}%` as `${number}%`
+  const small = report?.throughput.filter((result) => result.scenario === 'small') ?? []
+  const large = report?.throughput.filter((result) => result.scenario === 'large') ?? []
 
   return (
     <Card
-      caption="4-trial median · balanced order · lower is better"
+      caption="randomized trials · 95% CI · lower is better"
       t={t}
       title="BENCHMARK · VS MMKV"
     >
@@ -246,23 +343,36 @@ export function BenchmarkSection({
 
       {!running && report === undefined && error === undefined && (
         <Text style={[styles.sectionMessage, { color: t.faint }]}>
-          Run manually when the device is idle. Results are saved with build and
-          platform metadata.
+          Run manually when the device is idle and cool. Takes a few minutes;
+          results are saved with build and platform metadata.
         </Text>
       )}
 
       {report !== undefined && (
         <>
           <BenchmarkMetadataText report={report} t={t} />
-          {report.results.map((result) => (
-            <BenchmarkRow key={result.id} result={result} t={t} />
+          <GroupTitle t={t} title="THROUGHPUT · SMALL STORE" />
+          {small.map((result) => (
+            <ThroughputRow key={result.id} result={result} t={t} />
+          ))}
+          <GroupTitle t={t} title="THROUGHPUT · 20K-KEY STORE" />
+          {large.map((result) => (
+            <ThroughputRow key={result.id} result={result} t={t} />
+          ))}
+          <GroupTitle t={t} title="LATENCY AFTER IDLE · P50" />
+          {report.latency.map((result) => (
+            <LatencyRow key={result.id} result={result} t={t} />
+          ))}
+          <GroupTitle t={t} title="SCC-ONLY DIAGNOSTICS · MEDIAN" />
+          {report.diagnostics.map((diagnostic) => (
+            <DiagnosticRow diagnostic={diagnostic} key={diagnostic.id} t={t} />
           ))}
         </>
       )}
 
       <View style={styles.sectionActions}>
         <PillButton
-          accessibilityHint="Measures SCC and MMKV using four balanced alternating trials"
+          accessibilityHint="Measures SCC and MMKV in randomized interleaved trials"
           disabled={running}
           label={running ? 'Benchmark running…' : 'Run benchmark'}
           onPress={onRun}

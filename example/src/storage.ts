@@ -5,8 +5,8 @@ export const kv = createKV({ id: 'example' })
 
 export const kvCrossHandle = createKV({ id: 'example' })
 
-export const createSccBenchmarkStore = () =>
-  createKV({ id: 'bench_scc', recreate: true })
+export const createSccBenchmarkStore = (recreate: boolean) =>
+  createKV({ id: 'bench_scc', recreate })
 
 export const mmkvBench = createMMKV({
   id: 'bench',

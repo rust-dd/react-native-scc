@@ -39,3 +39,6 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# benchmark runs (scripts/bench-ios.mjs)
+bench-results/

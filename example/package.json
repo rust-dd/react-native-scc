@@ -23,7 +23,9 @@
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "bench:ios": "node scripts/bench-ios.mjs",
+    "bench:compare": "node scripts/bench-compare.mjs"
   },
   "private": true
 }

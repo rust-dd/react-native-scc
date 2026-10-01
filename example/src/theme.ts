@@ -152,6 +152,13 @@ export const styles = StyleSheet.create({
   progress: { marginBottom: 12, gap: 5 },
   progressTrack: { height: 6, borderRadius: 3, overflow: 'hidden' },
   progressFill: { height: 6, borderRadius: 3 },
+  benchGroup: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1.2,
+    marginTop: 4,
+    marginBottom: 10,
+  },
   benchRow: { marginBottom: 16 },
   benchHeader: {
     flexDirection: 'row',

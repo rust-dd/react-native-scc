@@ -23,3 +23,7 @@ tempfile = { workspace = true }
 [[bench]]
 name = "kv_bench"
 harness = false
+
+[[bench]]
+name = "scenario_bench"
+harness = false
