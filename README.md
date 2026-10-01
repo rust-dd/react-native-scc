@@ -30,30 +30,33 @@ JS-visible synchronous API cost vs [react-native-mmkv](https://github.com/mrousa
 
 | Case (ns per op, lower is better) | SCC | MMKV | SCC faster |
 | --- | ---: | ---: | ---: |
-| `getString`, 16 B | 158 | 324 | 2.05× |
-| `getString`, 256 B | 181 | 381 | 2.13× |
-| `getString`, 4 KiB | 451 | 696 | 1.54× |
-| `getNumber` | 131 | 300 | 2.29× |
-| `getBoolean` | 134 | 288 | 2.13× |
-| `getString`, missing key | 131 | 282 | 2.23× |
-| `contains` | 125 | 269 | 2.19× |
-| `getString`, 16 B, 20k-key store | 162 | 356 | 2.22× |
-| `set` string, 16 B | 243 | 429 | 1.79× |
-| `set` string, 256 B | 255 | 520 | 2.05× |
-| `set` string, 4 KiB | 714 | 4180 | 5.85× |
-| `set` number | 200 | 392 | 1.96× |
-| `set` boolean | 205 | 372 | 1.81× |
-| `setJSON`, ~1 KiB object | 6530 | 7820 | 1.20× |
-| `getJSON`, ~1 KiB object | 5290 | 5440 | 1.03× |
-| `getMany`, 100 × 16 B, per key ¹ | 178 | 281 | 1.58× |
-| `setMany`, 100 × 16 B, per key ¹ | 178 | 350 | 1.96× |
-| `set` string, 16 B, one change listener | 348 | 520 | 1.54× |
+| `getString`, 16 B | 155 | 327 | 2.11× |
+| `getString`, 256 B | 180 | 380 | 2.14× |
+| `getString`, 4 KiB | 442 | 696 | 1.55× |
+| `getNumber` | 132 | 296 | 2.23× |
+| `getBoolean` | 136 | 289 | 2.13× |
+| `getString`, missing key | 127 | 281 | 2.22× |
+| `contains` | 123 | 272 | 2.20× |
+| `getString`, 16 B, 20k-key store | 157 | 358 | 2.26× |
+| `set` string, 16 B | 248 | 427 | 1.76× |
+| `set` string, 256 B | 263 | 545 | 2.02× |
+| `set` string, 4 KiB | 704 | 3990 | 5.66× |
+| `set` number | 198 | 388 | 1.96× |
+| `set` boolean | 206 | 365 | 1.77× |
+| `setJSON`, ~1 KiB object | 6550 | 7830 | 1.20× |
+| `getJSON`, ~1 KiB object | 5260 | 5410 | 1.03× |
+| `getMany`, 100 × 16 B, per key ¹ | 150 | 283 | 1.88× |
+| `setMany`, 100 × 16 B, per key ¹ | 170 | 354 | 2.08× |
+| `set` string, 16 B, one change listener | 269 | 536 | 1.97× |
+| `set` string, 16 B, 50 key listeners ² | 282 | 3940 | 13.90× |
 
-A single call after an idle frame (p50): `set` 8.4 µs vs 14.5 µs, `getString` 6.2 µs vs 12.2 µs.
+A single call after an idle frame (p50): `set` 9.7 µs vs 16.1 µs, `getString` 6.0 µs vs 12.3 µs.
 
 ¹ One SCC batch call vs 100 MMKV scalar calls, since MMKV has no batch API; this compares throughput, not atomicity.
 
-Write rows measure API return, not durability: MMKV writes into an mmap, so a value survives a process kill once `set` returns, while SCC appends to its WAL on a background thread within ~8 ms; `flush()` is the barrier (1000 × 256 B writes plus `flush()` took 3.6 ms on this device). Reproduce with `npm run bench:ios -- --device <udid> --team <apple-team-id>` from `example/`; every run saves its raw samples.
+² 50 hook-style subscriptions: SCC `addOnKeyChangedListener`, MMKV one filtered `addOnValueChangedListener` per key, the way its hooks subscribe. Listener rows time the write call; delivery to JS follows asynchronously and is not timed.
+
+Write rows measure API return, not durability: MMKV writes into an mmap, so a value survives a process kill once `set` returns, while SCC appends to its WAL on a background thread within ~8 ms; `flush()` is the barrier (1000 × 256 B writes plus `flush()` took 4.0 ms on this device). Reproduce with `npm run bench:ios -- --device <udid> --team <apple-team-id>` from `example/`; every run saves its raw samples.
 
 ## Install
 
