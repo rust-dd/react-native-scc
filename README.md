@@ -26,21 +26,34 @@ The design goal is simple: **every read is a RAM lookup, every write is durable,
 
 ## Benchmarks
 
-JS-visible synchronous API latency vs [react-native-mmkv](https://github.com/mrousavy/react-native-mmkv) 4.3.2, measured by the example app in an iOS 26.3.1 simulator Release build. The table shows the range of per-launch medians from two independent launches. Each launch runs four balanced AB/BA trials with a physically recreated SCC store, cleared MMKV store, and verified 103-key seed per trial. Scalar cases run 100k iterations; 100-key cases run 1k iterations and report per-key latency. SCC uses its default relaxed WAL and performs two sequential, untimed flush barriers after every SCC sample; the second waits behind post-flush writer maintenance, so compaction cannot overlap the following MMKV sample.
+JS-visible synchronous API cost vs [react-native-mmkv](https://github.com/mrousavy/react-native-mmkv) 4.3.2 on an **iPhone 15 Pro Max (iOS 27.0.1), Release build**, measured with the example app's [methodology v6](example/BENCHMARK.md) benchmark: random keys over 482- and 20k-key stores, values that differ from the stored one, randomized interleaved trials, results cross-checked between both libraries, and 95% bootstrap confidence intervals. Values are the median of three fresh app launches with ten trials each; every row favors SCC with its interval clear of 1× on all three launches.
 
-| Case (lower is better) | SCC | MMKV |
-| --- | ---: | ---: |
-| `setMany`, 100 × 16 B, per key | 209–213 ns | 308 ns |
-| `getMany`, 100 × 16 B, per key | 104–118 ns | 167–188 ns |
-| Set string, 64 B | 358–438 ns | 530–581 ns |
-| Get string, 64 B | 164–184 ns | 176–202 ns |
-| Set string, 16 B | 292–365 ns | 291–316 ns |
-| Get string, 16 B | 146–160 ns | 166–177 ns |
-| Set number | 221–270 ns | 225–232 ns |
-| Get number | 111 ns | 129–132 ns |
-| Get missing key | 111–113 ns | 126–133 ns |
+| Case (ns per op, lower is better) | SCC | MMKV | SCC faster |
+| --- | ---: | ---: | ---: |
+| `getString`, 16 B | 158 | 324 | 2.05× |
+| `getString`, 256 B | 181 | 381 | 2.13× |
+| `getString`, 4 KiB | 451 | 696 | 1.54× |
+| `getNumber` | 131 | 300 | 2.29× |
+| `getBoolean` | 134 | 288 | 2.13× |
+| `getString`, missing key | 131 | 282 | 2.23× |
+| `contains` | 125 | 269 | 2.19× |
+| `getString`, 16 B, 20k-key store | 162 | 356 | 2.22× |
+| `set` string, 16 B | 243 | 429 | 1.79× |
+| `set` string, 256 B | 255 | 520 | 2.05× |
+| `set` string, 4 KiB | 714 | 4180 | 5.85× |
+| `set` number | 200 | 392 | 1.96× |
+| `set` boolean | 205 | 372 | 1.81× |
+| `setJSON`, ~1 KiB object | 6530 | 7820 | 1.20× |
+| `getJSON`, ~1 KiB object | 5290 | 5440 | 1.03× |
+| `getMany`, 100 × 16 B, per key ¹ | 178 | 281 | 1.58× |
+| `setMany`, 100 × 16 B, per key ¹ | 178 | 350 | 1.96× |
+| `set` string, 16 B, one change listener | 348 | 520 | 1.54× |
 
-These simulator launches are not a universal device claim. The write cases measure API-return latency, not `fsync`; call `flush()` when you need an explicit durability barrier. The `setMany` row compares one SCC bridge call with 100 independent MMKV scalar calls; it is a throughput comparison, not a transaction or crash-atomicity claim. Run the benchmark yourself with the in-app **Run benchmark** button; the app persists all raw samples and methodology metadata. For automated Release runs, set `EXPO_PUBLIC_SCC_AUTORUN_BENCHMARK=1` before building.
+A single call after an idle frame (p50): `set` 8.4 µs vs 14.5 µs, `getString` 6.2 µs vs 12.2 µs.
+
+¹ One SCC batch call vs 100 MMKV scalar calls, since MMKV has no batch API; this compares throughput, not atomicity.
+
+Write rows measure API return, not durability: MMKV writes into an mmap, so a value survives a process kill once `set` returns, while SCC appends to its WAL on a background thread within ~8 ms; `flush()` is the barrier (1000 × 256 B writes plus `flush()` took 3.6 ms on this device). Reproduce with `npm run bench:ios -- --device <udid> --team <apple-team-id>` from `example/`; every run saves its raw samples.
 
 ## Install
 
