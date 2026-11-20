@@ -7,7 +7,7 @@ import { resetStores } from './mockNitro'
 import { createStore as createZustandStore } from 'zustand/vanilla'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { createStore as createJotaiStore } from 'jotai/vanilla'
-import { createKV } from '../src/kv'
+import { createKV, getDefaultKV } from '../src/kv'
 import { sccStateStorage } from '../src/adapters/zustand'
 import { atomWithKV } from '../src/adapters/jotai'
 import { createSccStorage } from '../src/adapters/redux'
@@ -97,4 +97,35 @@ test('redux-persist engine turns native failures into rejected promises', async 
   }).not.toThrow()
   await expect(deletePromise).rejects.toBe(error)
   deleteSpy.mockRestore()
+})
+
+test('adapters without a kv follow the default store across a close', () => {
+  const zustand = sccStateStorage()
+  const redux = createSccStorage()
+  zustand.setItem('z', '1')
+
+  createKV().close()
+
+  zustand.setItem('z', '2')
+  void redux.setItem('r', '3')
+  const fresh = getDefaultKV()
+  expect(fresh.getString('z')).toBe('2')
+  expect(fresh.getString('r')).toBe('3')
+  fresh.close()
+})
+
+test('a default-backed jotai atom keeps reacting after the default store reopens', async () => {
+  const atom = atomWithKV('jotai-default', 0)
+  const store = createJotaiStore()
+  const seen: number[] = []
+  const unsubscribe = store.sub(atom, () => seen.push(store.get(atom)))
+
+  createKV().close()
+  await flushMicrotasks()
+  getDefaultKV().setJSON('jotai-default', 5)
+  await flushMicrotasks()
+
+  expect(store.get(atom)).toBe(5)
+  unsubscribe()
+  getDefaultKV().close()
 })

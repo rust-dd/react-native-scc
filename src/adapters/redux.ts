@@ -6,15 +6,15 @@ import { getDefaultKV, type KV } from '../kv'
  * persistReducer({ key: 'root', storage: createSccStorage() }, rootReducer)
  */
 export function createSccStorage(kv?: KV) {
-  const store = kv ?? getDefaultKV()
+  const store = () => kv ?? getDefaultKV()
   return {
     getItem: async (key: string): Promise<string | null> =>
-      store.getString(key) ?? null,
+      store().getString(key) ?? null,
     setItem: async (key: string, value: string): Promise<void> => {
-      store.set(key, value)
+      store().set(key, value)
     },
     removeItem: async (key: string): Promise<void> => {
-      store.delete(key)
+      store().delete(key)
     },
   }
 }

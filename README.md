@@ -199,6 +199,8 @@ function Counter() {
 
 Each hook returns `[value, setValue]`; calling `setValue(undefined)` deletes the key. Hooks re-render on any write to the key, including writes made through other KV objects opened with the same id.
 
+If the default store is closed through any handle, hooks and adapters move on to a freshly opened one.
+
 ```tsx
 const theme = useKVSelector<{ theme?: string }, string | undefined>(
   'settings',

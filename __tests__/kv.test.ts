@@ -439,6 +439,25 @@ test('closing the default store allows a fresh default instance', () => {
   reopened.close()
 })
 
+test('closing the default store through another handle hands out a live default', async () => {
+  const stale = getDefaultKV()
+  stale.set('k', 'old')
+  const events: Array<string | null> = []
+  stale.addOnKeyChangedListener('k', (key) => events.push(key))
+
+  createKV().close()
+  const fresh = getDefaultKV()
+  expect(fresh).not.toBe(stale)
+  fresh.set('k', 'new')
+  expect(fresh.getString('k')).toBe('new')
+
+  await flushMicrotasks()
+  expect(events).toEqual([null])
+  stale.close()
+  expect(getDefaultKV()).toBe(fresh)
+  fresh.close()
+})
+
 test('batched change events keep order and one event per write', async () => {
   const kv = createKV({ id: 'batch-events' })
   const events: Array<string | null> = []

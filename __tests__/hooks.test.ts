@@ -5,7 +5,7 @@ jest.mock(
 
 import { resetStores } from './mockNitro'
 import { __hookInternals } from '../src/hooks'
-import { createKV } from '../src/kv'
+import { createKV, getDefaultKV } from '../src/kv'
 
 const flushMicrotasks = () =>
   new Promise<void>((resolve) => setTimeout(resolve, 0))
@@ -120,4 +120,30 @@ test('buffer snapshots compare bytes instead of fresh ArrayBuffer identities', a
   await flushMicrotasks()
   expect(source.getSnapshot()).not.toBe(initial)
   unsubscribe()
+})
+
+test('a snapshot source over a default store closed elsewhere signals a change', async () => {
+  const kv = getDefaultKV()
+  kv.setJSON('profile', { name: 'a' })
+  const source = new __hookInternals.KVSnapshotSource(
+    kv,
+    'profile',
+    __hookInternals.readJSON,
+    __hookInternals.sameJSON
+  )
+  const before = source.getSnapshot()
+  let changes = 0
+  const unsubscribe = source.subscribe(() => {
+    changes += 1
+  })
+
+  createKV().close()
+  await flushMicrotasks()
+
+  expect(changes).toBe(1)
+  const after = source.getSnapshot()
+  expect(after).not.toBe(before)
+  expect(source.getSnapshot()).toBe(after)
+  unsubscribe()
+  getDefaultKV().close()
 })

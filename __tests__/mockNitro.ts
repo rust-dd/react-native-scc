@@ -1,9 +1,13 @@
 type Listener = { onChange: () => void; pending: (string | null)[] }
 
+type Entry = { tag: number; value: unknown; expiresAt?: number }
+
 class FakeStore {
-  map = new Map<string, { tag: number; value: unknown; expiresAt?: number }>()
   listeners = new Map<number, Listener>()
   nextListenerId = 1
+  closed = false
+
+  constructor(public map = new Map<string, Entry>()) {}
 
   notify(key: string | undefined) {
     for (const listener of this.listeners.values()) {
@@ -25,12 +29,18 @@ export const dispatchErrors: unknown[] = []
 
 const stores = new Map<string, FakeStore>()
 
-function mockGetStore(id: string): FakeStore {
-  let store = stores.get(id)
-  if (store === undefined) {
-    store = new FakeStore()
-    stores.set(id, store)
+function mockGetStore(id: string, recreate = false): FakeStore {
+  const live = stores.get(id)
+  if (live !== undefined && !live.closed) {
+    if (recreate) {
+      throw new Error(
+        `store '${id}' is already open; close it before reopening with recreate`
+      )
+    }
+    return live
   }
+  const store = new FakeStore(recreate ? undefined : live?.map)
+  stores.set(id, store)
   return store
 }
 
@@ -48,6 +58,7 @@ function mockMakeInstance(store: FakeStore) {
     return entry.value
   }
   const set = (key: string, tag: number, value: unknown, ttlMs?: number) => {
+    if (store.closed) throw new Error('set failed: store is closed')
     store.map.set(key, {
       tag,
       value,
@@ -86,7 +97,9 @@ function mockMakeInstance(store: FakeStore) {
     flush: () => {},
     size: () =>
       [...store.map.values()].filter((entry) => !isExpired(entry)).length,
-    close: () => {},
+    close: () => {
+      store.closed = true
+    },
     addListener: (onChange: () => void) => {
       const id = store.nextListenerId++
       store.listeners.set(id, { onChange, pending: [] })
@@ -173,7 +186,8 @@ export const mockNitroModule = {
         return { getBaseDirectory: () => '/mock' }
       }
       return {
-        open: (_dir: string, id: string) => mockMakeInstance(mockGetStore(id)),
+        open: (_dir: string, id: string, _strict: boolean, recreate: boolean) =>
+          mockMakeInstance(mockGetStore(id, recreate)),
         inMemory: (id: string) => mockMakeInstance(mockGetStore(`mem:${id}`)),
       }
     },

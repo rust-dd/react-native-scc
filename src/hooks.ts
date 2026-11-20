@@ -5,11 +5,18 @@ import {
   useRef,
   useSyncExternalStore,
 } from 'react'
-import { getDefaultKV, INTERNAL_GET_JSON_TEXT, KV } from './kv'
+import {
+  getDefaultKV,
+  INTERNAL_GET_JSON_TEXT,
+  INTERNAL_IS_CLOSED,
+  KV,
+} from './kv'
 
 interface Snapshot<T> {
   value: T | undefined
 }
+
+const CLOSED_SNAPSHOT: Snapshot<never> = { value: undefined }
 
 type SnapshotReader<T> = (
   kv: KV,
@@ -31,6 +38,7 @@ class KVSnapshotSource<T> {
   ) {}
 
   readonly getSnapshot = (): Snapshot<T> => {
+    if (this.store[INTERNAL_IS_CLOSED]) return CLOSED_SNAPSHOT
     const next = this.read(this.store, this.key, this.snapshot)
     if (this.snapshot === undefined || !this.equals(this.snapshot, next)) {
       this.snapshot = next

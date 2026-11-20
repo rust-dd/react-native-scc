@@ -69,6 +69,7 @@ const TAG_BYTES = 3
 const TAG_JSON = 4
 
 export const INTERNAL_GET_JSON_TEXT = Symbol('scc.getJSONText')
+export const INTERNAL_IS_CLOSED = Symbol('scc.isClosed')
 
 const textEncoder =
   typeof TextEncoder === 'undefined' ? undefined : new TextEncoder()
@@ -290,7 +291,8 @@ export class KV {
   constructor(
     native: SccKvInstance,
     keyPrefix = '',
-    private readonly ownsNative = true
+    private readonly ownsNative = true,
+    private readonly storeKey?: string
   ) {
     this.native = native
     this.keyPrefix = keyPrefix
@@ -604,15 +606,49 @@ export class KV {
       throw new Error('Cannot close a KV namespace; close its root KV instance')
     }
     if (this.closed) return
+    this.detach()
+    this.native.close()
+    this.closed = true
+    const fallback = defaultInstance
+    if (fallback === this) {
+      defaultInstance = undefined
+    } else if (fallback !== undefined && fallback.storeKey === this.storeKey) {
+      defaultInstance = undefined
+      fallback.abandon()
+    }
+  }
+
+  get [INTERNAL_IS_CLOSED](): boolean {
+    return this.closed
+  }
+
+  private detach(): ListenerEntry[] {
     if (this.nativeSubscription !== undefined) {
       this.native.removeListener(this.nativeSubscription)
       this.nativeSubscription = undefined
     }
+    const entries = [...this.listeners]
+    for (const keyed of this.keyListeners.values()) entries.push(...keyed)
     this.listeners.clear()
     this.keyListeners.clear()
-    this.native.close()
+    return entries
+  }
+
+  // Closed through another handle; subscribers must re-resolve the default.
+  private abandon(): void {
+    const entries = this.detach()
     this.closed = true
-    if (defaultInstance === this) defaultInstance = undefined
+    queueMicrotask(() => {
+      let failure: { error: unknown } | undefined
+      for (const entry of entries) {
+        try {
+          entry.listener(null)
+        } catch (error) {
+          failure ??= { error }
+        }
+      }
+      if (failure !== undefined) throw failure.error
+    })
   }
 
   setAsync(key: string, value: KVValue): Promise<void> {
@@ -730,7 +766,12 @@ export function createKV(options: KVOptions = {}): KV {
     'ttlSweepIntervalMs'
   )
   if (options.persistence === 'none') {
-    return new KV(getFactory().inMemory(id, maxEntries, ttlSweepIntervalMs))
+    return new KV(
+      getFactory().inMemory(id, maxEntries, ttlSweepIntervalMs),
+      '',
+      true,
+      `mem\0${id}`
+    )
   }
   const dir = options.path ?? getBaseDirectory()
   const strict = options.durability === 'strict'
@@ -743,7 +784,10 @@ export function createKV(options: KVOptions = {}): KV {
       options.encryptionKey,
       maxEntries,
       ttlSweepIntervalMs
-    )
+    ),
+    '',
+    true,
+    `disk\0${dir}\0${id}`
   )
 }
 

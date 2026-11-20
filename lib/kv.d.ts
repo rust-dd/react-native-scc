@@ -5,6 +5,7 @@ export interface KVSubscription {
     remove(): void;
 }
 export declare const INTERNAL_GET_JSON_TEXT: unique symbol;
+export declare const INTERNAL_IS_CLOSED: unique symbol;
 export interface KVTransaction {
     set(key: string, value: KVValue): void;
     setJSON(key: string, value: unknown): void;
@@ -18,6 +19,7 @@ export interface KVTransaction {
 }
 export declare class KV {
     private readonly ownsNative;
+    private readonly storeKey?;
     private readonly native;
     private readonly calls;
     private readonly listeners;
@@ -25,7 +27,7 @@ export declare class KV {
     private nativeSubscription;
     private readonly keyPrefix;
     private closed;
-    constructor(native: SccKvInstance, keyPrefix?: string, ownsNative?: boolean);
+    constructor(native: SccKvInstance, keyPrefix?: string, ownsNative?: boolean, storeKey?: string | undefined);
     /**
      * Fires after every mutation of the underlying store — including writes
      * made through other KV objects opened with the same id. `key` is null
@@ -76,6 +78,9 @@ export declare class KV {
      * views are non-owning and must be discarded instead of closed.
      */
     close(): void;
+    get [INTERNAL_IS_CLOSED](): boolean;
+    private detach;
+    private abandon;
     setAsync(key: string, value: KVValue): Promise<void>;
     setJSONAsync(key: string, value: unknown): Promise<void>;
     getStringAsync(key: string): Promise<string | undefined>;
