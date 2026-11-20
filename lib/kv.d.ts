@@ -7,6 +7,7 @@ export interface KVSubscription {
 export declare const INTERNAL_GET_JSON_TEXT: unique symbol;
 export declare const INTERNAL_IS_CLOSED: unique symbol;
 export declare const INTERNAL_SET_JSON: unique symbol;
+export declare const INTERNAL_ON_KEY_CHANGED: unique symbol;
 export interface KVTransaction {
     set(key: string, value: KVValue): void;
     setJSON(key: string, value: unknown): void;
@@ -56,6 +57,8 @@ export declare class KV {
     addOnValueChangedListener(listener: KVChangeListener): KVSubscription;
     /** Like addOnValueChangedListener, but only for `key` (and clearAll, as null). */
     addOnKeyChangedListener(key: string, listener: KVChangeListener): KVSubscription;
+    /** Like addOnKeyChangedListener, but called once per key per delivered batch; for consumers that re-read. */
+    [INTERNAL_ON_KEY_CHANGED](key: string, listener: KVChangeListener): KVSubscription;
     private subscribe;
     private keyEntries;
     private unsubscribe;

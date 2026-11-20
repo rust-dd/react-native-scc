@@ -229,7 +229,7 @@ const sub = kv.addOnValueChangedListener((key) => {
 sub.remove()
 ```
 
-`addOnKeyChangedListener` fires only for one key (and for `clearAll`). Key listeners are indexed, so a write only reaches the listeners of its own key, and a burst of writes to one key reaches each of them once per delivered batch (only `null` if the batch includes a `clearAll`). Hooks, `observeJSON`, and the jotai adapter subscribe this way:
+`addOnKeyChangedListener` fires only for one key (and for `clearAll`), once per write. Key listeners are indexed, so a write only reaches the listeners of its own key. Hooks, `observeJSON`, and the jotai adapter subscribe this way too, but since they re-read the value they are called once per key per delivered batch, so a burst of 100 writes costs one re-render or one `JSON.parse`:
 
 ```ts
 const sub = kv.addOnKeyChangedListener('settings', () => console.log('settings changed'))

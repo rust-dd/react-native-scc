@@ -491,9 +491,6 @@ test('key listeners fire only for their key and clearAll', async () => {
   kv.set('user:name', 'Ada')
   kv.set('user:age', 36)
   kv.set('other', true)
-  await flushMicrotasks()
-  expect(name).toEqual(['name'])
-  expect(other).toEqual(['other'])
   kv.clearAll()
   await flushMicrotasks()
   expect(name).toEqual(['name', null])
@@ -515,7 +512,7 @@ test('a throwing listener does not starve the others', async () => {
   kv.set('k', 1)
   kv.set('k', 2)
   await flushMicrotasks()
-  expect(seen).toEqual(['k'])
+  expect(seen).toEqual(['k', 'k'])
   const messages = dispatchErrors.splice(0).map((error) => (error as Error).message)
   expect(messages).toEqual(['boom'])
 })
@@ -608,17 +605,21 @@ test('namespace getKeysByPrefix returns keys relative to the view', () => {
   expect(kv.getAllKeys()).toEqual(['draft:root'])
 })
 
-test('a burst of writes to one key reaches its key listeners once', async () => {
+test('a burst of writes reaches public key listeners per write and re-readers once', async () => {
   const kv = createKV({ id: 'burst' })
   const keyed: Array<string | null> = []
-  const all: Array<string | null> = []
+  const selected: unknown[] = []
   kv.addOnKeyChangedListener('k', (key) => keyed.push(key))
-  kv.addOnValueChangedListener((key) => all.push(key))
-  for (let i = 0; i < 100; i++) kv.set('k', i)
+  kv.observeJSON('k', (value: number | undefined) => value, (value) => selected.push(value))
+  const parse = jest.spyOn(JSON, 'parse')
+  for (let i = 0; i < 100; i++) kv.setJSON('k', i)
   await flushMicrotasks()
-  expect(keyed).toEqual(['k'])
-  expect(all).toHaveLength(100)
+  expect(keyed).toHaveLength(100)
+  expect(parse).toHaveBeenCalledTimes(1)
+  expect(selected).toEqual([undefined, 99])
+  parse.mockRestore()
 
+  keyed.length = 0
   kv.set('k', 1)
   kv.clearAll()
   await flushMicrotasks()

@@ -3,6 +3,7 @@ import {
   getDefaultKV,
   INTERNAL_GET_JSON_TEXT,
   INTERNAL_IS_CLOSED,
+  INTERNAL_ON_KEY_CHANGED,
   INTERNAL_SET_JSON,
   type KV,
   type KVSubscription,
@@ -37,7 +38,7 @@ export function atomWithKV<T>(key: string, initialValue: T, kv?: KV) {
         let subscription: KVSubscription
         const listen = () => {
           const target = store()
-          subscription = target.addOnKeyChangedListener(k, () => {
+          subscription = target[INTERNAL_ON_KEY_CHANGED](k, () => {
             if (kv === undefined && target[INTERNAL_IS_CLOSED]) listen()
             const json = store()[INTERNAL_GET_JSON_TEXT](k)
             if (written !== undefined && written.json === json) {

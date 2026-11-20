@@ -86,6 +86,7 @@ const TAG_JSON = 4
 export const INTERNAL_GET_JSON_TEXT = Symbol('scc.getJSONText')
 export const INTERNAL_IS_CLOSED = Symbol('scc.isClosed')
 export const INTERNAL_SET_JSON = Symbol('scc.setJSON')
+export const INTERNAL_ON_KEY_CHANGED = Symbol('scc.onKeyChanged')
 
 const textEncoder =
   typeof TextEncoder === 'undefined' ? undefined : new TextEncoder()
@@ -307,7 +308,11 @@ function nativeCalls(native: SccKvInstance): NativeCalls {
   return typeof create === 'function' ? create.call(native) : native
 }
 
-type ListenerEntry = { listener: KVChangeListener; since: number }
+type ListenerEntry = {
+  listener: KVChangeListener
+  since: number
+  coalesce: boolean
+}
 
 /** State a root store shares with its namespace views: one native listener, one fast path. */
 class StoreHub {
@@ -365,10 +370,19 @@ export class KV {
     return this.subscribe(listener, key)
   }
 
-  private subscribe(listener: KVChangeListener, key: string | undefined): KVSubscription {
+  /** Like addOnKeyChangedListener, but called once per key per delivered batch; for consumers that re-read. */
+  [INTERNAL_ON_KEY_CHANGED](key: string, listener: KVChangeListener): KVSubscription {
+    return this.subscribe(listener, key, true)
+  }
+
+  private subscribe(
+    listener: KVChangeListener,
+    key: string | undefined,
+    coalesce = false
+  ): KVSubscription {
     const hub = this.hub
     if (hub.closed) throw new Error('Cannot subscribe to a closed KV instance')
-    const entry = { listener, since: hub.deliveries }
+    const entry = { listener, since: hub.deliveries, coalesce }
     const entries = key === undefined ? this.listeners : this.keyEntries(key)
     entries.add(entry)
     hub.members.add(this)
@@ -442,18 +456,29 @@ export class KV {
       const key = this.toLocalChangedKey(changed)
       if (key === undefined) continue
       for (const entry of this.listeners) notify(entry, key)
-      if (key === null) cleared = true
-      else if (this.keyListeners.has(key)) (touched ??= new Set()).add(key)
+      if (key === null) {
+        cleared = true
+        for (const entries of this.keyListeners.values()) {
+          for (const entry of entries) if (!entry.coalesce) notify(entry, null)
+        }
+        continue
+      }
+      const entries = this.keyListeners.get(key)
+      if (entries === undefined) continue
+      for (const entry of entries) if (!entry.coalesce) notify(entry, key)
+      ;(touched ??= new Set()).add(key)
     }
-    // Key listeners re-read the value, so one call per key per delivery is enough.
+    // Coalesced subscribers re-read the value, so one call per key per delivery is enough.
     if (cleared) {
       for (const entries of this.keyListeners.values()) {
-        for (const entry of entries) notify(entry, null)
+        for (const entry of entries) if (entry.coalesce) notify(entry, null)
       }
     } else if (touched !== undefined) {
       for (const key of touched) {
         const entries = this.keyListeners.get(key)
-        if (entries !== undefined) for (const entry of entries) notify(entry, key)
+        if (entries !== undefined) {
+          for (const entry of entries) if (entry.coalesce) notify(entry, key)
+        }
       }
     }
   }
@@ -516,7 +541,7 @@ export class KV {
   ): KVSubscription {
     let selected!: S
     let initialized = false
-    const subscription = this.addOnKeyChangedListener(key, () => {
+    const subscription = this[INTERNAL_ON_KEY_CHANGED](key, () => {
       const next = selector(this.getJSON<T>(key))
       if (!initialized || !equals(selected, next)) {
         initialized = true

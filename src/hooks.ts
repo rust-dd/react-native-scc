@@ -9,6 +9,7 @@ import {
   getDefaultKV,
   INTERNAL_GET_JSON_TEXT,
   INTERNAL_IS_CLOSED,
+  INTERNAL_ON_KEY_CHANGED,
   KV,
 } from './kv'
 
@@ -50,7 +51,7 @@ class KVSnapshotSource<T> {
     const before = this.getSnapshot()
     this.listeners.add(listener)
     try {
-      this.subscription ??= this.store.addOnKeyChangedListener(this.key, () =>
+      this.subscription ??= this.store[INTERNAL_ON_KEY_CHANGED](this.key, () =>
         this.invalidate()
       )
     } catch (error) {
