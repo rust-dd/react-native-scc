@@ -38,6 +38,12 @@ function serializeJSON(value: unknown): string {
   return json
 }
 
+// Nitro only type-checks ArrayBuffers in debug; release builds would read arbitrary memory.
+function asBuffer(value: unknown): ArrayBuffer {
+  if (value instanceof ArrayBuffer) return value
+  throw new TypeError('value must be a string, number, boolean or ArrayBuffer')
+}
+
 function getPositiveSafeInteger(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new TypeError(`${name} must be a positive safe integer`)
@@ -115,7 +121,7 @@ function encodeValue(value: KVValue): { tag: number; bytes: Uint8Array } {
   if (typeof value === 'boolean') {
     return { tag: TAG_BOOL, bytes: new Uint8Array([value ? 1 : 0]) }
   }
-  return { tag: TAG_BYTES, bytes: new Uint8Array(value) }
+  return { tag: TAG_BYTES, bytes: new Uint8Array(asBuffer(value)) }
 }
 
 /**
@@ -179,9 +185,13 @@ class TransactionContext implements KVTransaction {
   set(key: string, value: KVValue): void {
     // Copy staged buffers: kv.set marshals at call time, so later caller-side
     // mutation must not leak into the commit here either.
+    const primitive =
+      typeof value === 'string' ||
+      typeof value === 'number' ||
+      typeof value === 'boolean'
     this.writes.set(key, {
       kind: 'value',
-      value: value instanceof ArrayBuffer ? value.slice(0) : value,
+      value: primitive ? value : asBuffer(value).slice(0),
     })
   }
 
@@ -485,7 +495,7 @@ export class KV {
       if (typeof value === 'string') this.calls.setString(fullKey, value)
       else if (typeof value === 'number') this.calls.setNumber(fullKey, value)
       else if (typeof value === 'boolean') this.calls.setBoolean(fullKey, value)
-      else this.native.setBuffer(fullKey, value)
+      else this.native.setBuffer(fullKey, asBuffer(value))
       return
     }
     const ttl = getTtlMs(options)
@@ -493,13 +503,13 @@ export class KV {
       if (typeof value === 'string') this.native.setStringTtl(fullKey, value, ttl)
       else if (typeof value === 'number') this.native.setNumberTtl(fullKey, value, ttl)
       else if (typeof value === 'boolean') this.native.setBooleanTtl(fullKey, value, ttl)
-      else this.native.setBufferTtl(fullKey, value, ttl)
+      else this.native.setBufferTtl(fullKey, asBuffer(value), ttl)
       return
     }
     if (typeof value === 'string') this.calls.setString(fullKey, value)
     else if (typeof value === 'number') this.calls.setNumber(fullKey, value)
     else if (typeof value === 'boolean') this.calls.setBoolean(fullKey, value)
-    else this.native.setBuffer(fullKey, value)
+    else this.native.setBuffer(fullKey, asBuffer(value))
   }
 
   setJSON(key: string, value: unknown, options?: SetOptions): void {
@@ -652,13 +662,13 @@ export class KV {
     })
   }
 
-  setAsync(key: string, value: KVValue): Promise<void> {
+  async setAsync(key: string, value: KVValue): Promise<void> {
     const fullKey = this.fullKey(key)
     if (typeof value === 'string') return this.native.setStringAsync(fullKey, value)
     if (typeof value === 'number') return this.native.setNumberAsync(fullKey, value)
     if (typeof value === 'boolean')
       return this.native.setBooleanAsync(fullKey, value)
-    return this.native.setBufferAsync(fullKey, value)
+    return this.native.setBufferAsync(fullKey, asBuffer(value))
   }
 
   async setJSONAsync(key: string, value: unknown): Promise<void> {

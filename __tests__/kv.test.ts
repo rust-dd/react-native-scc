@@ -519,3 +519,18 @@ test('a throwing listener does not starve the others', async () => {
   const messages = dispatchErrors.splice(0).map((error) => (error as Error).message)
   expect(messages).toEqual(['boom'])
 })
+
+test('non-ArrayBuffer objects are rejected before reaching native', async () => {
+  const kv = createKV({ id: 'buffer-guard' })
+  const view = new Uint8Array([1, 2, 3])
+  for (const bad of [view, {}, null, undefined] as unknown[]) {
+    const value = bad as ArrayBuffer
+    expect(() => kv.set('k', value)).toThrow(TypeError)
+    expect(() => kv.set('k', value, { ttlMs: 1000 })).toThrow(TypeError)
+    await expect(kv.setAsync('k', value)).rejects.toThrow(TypeError)
+    expect(() => kv.transaction((tx) => tx.set('k', value))).toThrow(TypeError)
+  }
+  expect(kv.contains('k')).toBe(false)
+  kv.set('k', view.buffer)
+  expect(new Uint8Array(kv.getBuffer('k')!)).toEqual(view)
+})
