@@ -97,9 +97,28 @@ int32_t scc_kv_remove(struct SccKvStore *h, const uint8_t *key, uintptr_t key_le
 uint8_t *scc_kv_keys(struct SccKvStore *h, uintptr_t *out_len);
 
 /**
- * 0 ok, -1 error.
+ * Live keys starting with `prefix`, packed like `scc_kv_keys`.
  */
-int32_t scc_kv_clear(struct SccKvStore *h);
+uint8_t *scc_kv_keys_with_prefix(struct SccKvStore *h,
+                                 const uint8_t *prefix,
+                                 uintptr_t prefix_len,
+                                 uintptr_t *out_len);
+
+/**
+ * Number of live keys starting with `prefix`, or -1 on error.
+ */
+int64_t scc_kv_count_prefix(struct SccKvStore *h, const uint8_t *prefix, uintptr_t prefix_len);
+
+/**
+ * Deletes the live keys starting with `prefix` as one crash-atomic batch.
+ * Returns how many it removed, or -1 on error.
+ */
+int64_t scc_kv_delete_prefix(struct SccKvStore *h, const uint8_t *prefix, uintptr_t prefix_len);
+
+/**
+ * Number of live keys removed, or -1 on error.
+ */
+int64_t scc_kv_clear(struct SccKvStore *h);
 
 /**
  * Durability barrier: blocks until the WAL is drained and fsynced. 0 ok, -1 error.
@@ -187,7 +206,7 @@ uint64_t scc_kv_subscribe(struct SccKvStore *h, SccKvListener cb, void *user_dat
 int32_t scc_kv_unsubscribe(struct SccKvStore *h, uint64_t id);
 
 /**
- * Frees a buffer returned by `scc_kv_get`, `scc_kv_get_many_str`, or `scc_kv_keys`.
+ * Frees a buffer returned by `scc_kv_get`, `scc_kv_get_many_str` or the `scc_kv_keys*` calls.
  */
 void scc_kv_free(uint8_t *ptr, uintptr_t len);
 

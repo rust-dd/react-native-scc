@@ -27,6 +27,9 @@ namespace margelo::nitro::scckv {
       prototype.registerHybridMethod("contains", &HybridSccKvInstanceSpec::contains);
       prototype.registerHybridMethod("remove", &HybridSccKvInstanceSpec::remove);
       prototype.registerHybridMethod("getAllKeys", &HybridSccKvInstanceSpec::getAllKeys);
+      prototype.registerHybridMethod("getKeysByPrefix", &HybridSccKvInstanceSpec::getKeysByPrefix);
+      prototype.registerHybridMethod("countByPrefix", &HybridSccKvInstanceSpec::countByPrefix);
+      prototype.registerHybridMethod("deleteByPrefix", &HybridSccKvInstanceSpec::deleteByPrefix);
       prototype.registerHybridMethod("clearAll", &HybridSccKvInstanceSpec::clearAll);
       prototype.registerHybridMethod("flush", &HybridSccKvInstanceSpec::flush);
       prototype.registerHybridMethod("size", &HybridSccKvInstanceSpec::size);
@@ -55,6 +58,8 @@ namespace margelo::nitro::scckv {
       prototype.registerHybridMethod("containsAsync", &HybridSccKvInstanceSpec::containsAsync);
       prototype.registerHybridMethod("removeAsync", &HybridSccKvInstanceSpec::removeAsync);
       prototype.registerHybridMethod("getAllKeysAsync", &HybridSccKvInstanceSpec::getAllKeysAsync);
+      prototype.registerHybridMethod("getKeysByPrefixAsync", &HybridSccKvInstanceSpec::getKeysByPrefixAsync);
+      prototype.registerHybridMethod("deleteByPrefixAsync", &HybridSccKvInstanceSpec::deleteByPrefixAsync);
       prototype.registerHybridMethod("clearAllAsync", &HybridSccKvInstanceSpec::clearAllAsync);
       prototype.registerHybridMethod("flushAsync", &HybridSccKvInstanceSpec::flushAsync);
       prototype.registerHybridMethod("setManyStringAsync", &HybridSccKvInstanceSpec::setManyStringAsync);

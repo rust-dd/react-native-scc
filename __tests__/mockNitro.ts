@@ -73,6 +73,10 @@ function mockMakeInstance(store: FakeStore) {
     if (live) store.notify(key)
     return live
   }
+  const keysWithPrefix = (prefix: string) =>
+    [...store.map.entries()]
+      .filter(([key, entry]) => key.startsWith(prefix) && !isExpired(entry))
+      .map(([key]) => key)
   const instance = {
     setString: (k: string, v: string) => set(k, 0, v),
     setNumber: (k: string, v: number) => set(k, 1, v),
@@ -89,13 +93,16 @@ function mockMakeInstance(store: FakeStore) {
       return entry !== undefined && !isExpired(entry)
     },
     remove: (k: string) => removeLive(k),
-    getAllKeys: () =>
-      [...store.map.entries()]
-        .filter(([, entry]) => !isExpired(entry))
-        .map(([key]) => key),
+    getAllKeys: () => keysWithPrefix(''),
+    getKeysByPrefix: (prefix: string) => keysWithPrefix(prefix),
+    countByPrefix: (prefix: string) => keysWithPrefix(prefix).length,
+    deleteByPrefix: (prefix: string) =>
+      keysWithPrefix(prefix).filter((key) => removeLive(key)).length,
     clearAll: () => {
+      const removed = keysWithPrefix('').length
       store.map.clear()
       store.notify(undefined)
+      return removed
     },
     flush: () => {},
     size: () =>

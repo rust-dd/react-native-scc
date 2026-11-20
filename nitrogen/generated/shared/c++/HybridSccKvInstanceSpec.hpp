@@ -68,7 +68,10 @@ namespace margelo::nitro::scckv {
       virtual bool contains(const std::string& key) = 0;
       virtual bool remove(const std::string& key) = 0;
       virtual std::vector<std::string> getAllKeys() = 0;
-      virtual void clearAll() = 0;
+      virtual std::vector<std::string> getKeysByPrefix(const std::string& prefix) = 0;
+      virtual double countByPrefix(const std::string& prefix) = 0;
+      virtual double deleteByPrefix(const std::string& prefix) = 0;
+      virtual double clearAll() = 0;
       virtual void flush() = 0;
       virtual double size() = 0;
       virtual void close() = 0;
@@ -96,6 +99,8 @@ namespace margelo::nitro::scckv {
       virtual std::shared_ptr<Promise<bool>> containsAsync(const std::string& key) = 0;
       virtual std::shared_ptr<Promise<bool>> removeAsync(const std::string& key) = 0;
       virtual std::shared_ptr<Promise<std::vector<std::string>>> getAllKeysAsync() = 0;
+      virtual std::shared_ptr<Promise<std::vector<std::string>>> getKeysByPrefixAsync(const std::string& prefix) = 0;
+      virtual std::shared_ptr<Promise<double>> deleteByPrefixAsync(const std::string& prefix) = 0;
       virtual std::shared_ptr<Promise<void>> clearAllAsync() = 0;
       virtual std::shared_ptr<Promise<void>> flushAsync() = 0;
       virtual std::shared_ptr<Promise<void>> setManyStringAsync(const std::vector<std::string>& keys, const std::vector<std::string>& values) = 0;

@@ -489,24 +489,12 @@ export class KV {
   }
 
   getKeysByPrefix(prefix: string): string[] {
-    const keys = this.fullKeysByPrefix(prefix)
-    if (this.keyPrefix === '') return keys
-    return keys.map((key) => key.slice(this.keyPrefix.length))
-  }
-
-  private fullKeysByPrefix(prefix: string): string[] {
-    const fullPrefix = this.fullKey(prefix)
-    return this.native.getAllKeys().filter((key) => key.startsWith(fullPrefix))
+    return this.toLocalKeys(this.native.getKeysByPrefix(this.fullKey(prefix)))
   }
 
   /** Deletes the matching snapshot as one native crash-atomic WAL batch. */
   deleteByPrefix(prefix: string): number {
-    const keys = this.fullKeysByPrefix(prefix)
-    if (keys.length === 0) return 0
-    this.native.applyBatch(
-      encodeBatch(keys.map((key): EncodedOp => ({ del: true, key })))
-    )
-    return keys.length
+    return this.native.deleteByPrefix(this.fullKey(prefix))
   }
 
   observeJSON<T = unknown, S = T | undefined>(
@@ -631,9 +619,7 @@ export class KV {
 
   clearAll(): number {
     if (this.keyPrefix !== '') return this.deleteByPrefix('')
-    const removed = this.size
-    this.native.clearAll()
-    return removed
+    return this.native.clearAll()
   }
 
   flush(): void {
@@ -658,7 +644,7 @@ export class KV {
   }
 
   get size(): number {
-    if (this.keyPrefix !== '') return this.getAllKeys().length
+    if (this.keyPrefix !== '') return this.native.countByPrefix(this.keyPrefix)
     return this.native.size()
   }
 
@@ -769,17 +755,12 @@ export class KV {
 
   async getAllKeysAsync(): Promise<string[]> {
     if (this.keyPrefix === '') return this.native.getAllKeysAsync()
-    const keys = await this.getFullKeysByPrefixAsync('')
-    return keys.map((key) => key.slice(this.keyPrefix.length))
+    return this.toLocalKeys(await this.native.getKeysByPrefixAsync(this.keyPrefix))
   }
 
   async clearAllAsync(): Promise<void> {
     if (this.keyPrefix !== '') {
-      const keys = await this.getFullKeysByPrefixAsync('')
-      if (keys.length === 0) return
-      this.native.applyBatch(
-        encodeBatch(keys.map((key): EncodedOp => ({ del: true, key })))
-      )
+      await this.native.deleteByPrefixAsync(this.keyPrefix)
       return
     }
     return this.native.clearAllAsync()
@@ -817,10 +798,10 @@ export class KV {
     return keys.map((key) => `${this.keyPrefix}${key}`)
   }
 
-  private async getFullKeysByPrefixAsync(prefix: string): Promise<string[]> {
-    const fullPrefix = this.fullKey(prefix)
-    const keys = await this.native.getAllKeysAsync()
-    return keys.filter((key) => key.startsWith(fullPrefix))
+  private toLocalKeys(keys: string[]): string[] {
+    if (this.keyPrefix === '') return keys
+    const start = this.keyPrefix.length
+    return keys.map((key) => key.slice(start))
   }
 
   private toLocalChangedKey(key: string | null): string | null | undefined {

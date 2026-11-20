@@ -286,10 +286,14 @@ impl Store {
     }
 
     pub fn keys(&self) -> Vec<String> {
+        self.keys_with_prefix("")
+    }
+
+    pub fn keys_with_prefix(&self, prefix: &str) -> Vec<String> {
         let now = crate::now_ms();
-        let mut out = Vec::with_capacity(self.map.len());
+        let mut out = Vec::new();
         self.map.iter_sync(|k, slot| {
-            if !slot.is_expired(now) {
+            if k.starts_with(prefix) && !slot.is_expired(now) {
                 out.push(k.to_string());
             }
             true
@@ -298,10 +302,14 @@ impl Store {
     }
 
     pub fn len(&self) -> usize {
+        self.count_with_prefix("")
+    }
+
+    pub fn count_with_prefix(&self, prefix: &str) -> usize {
         let now = crate::now_ms();
         let mut len = 0;
-        self.map.iter_sync(|_, slot| {
-            if !slot.is_expired(now) {
+        self.map.iter_sync(|k, slot| {
+            if k.starts_with(prefix) && !slot.is_expired(now) {
                 len += 1;
             }
             true

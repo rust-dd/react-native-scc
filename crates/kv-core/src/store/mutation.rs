@@ -197,15 +197,54 @@ impl Store {
         Ok(existed)
     }
 
-    pub fn clear(&self) -> Result<()> {
-        self.mutate(|log| {
-            self.map.clear_sync();
+    /// Returns how many live keys it removed, counted in the same pass.
+    pub fn clear(&self) -> Result<usize> {
+        let now = crate::now_ms();
+        let removed = self.mutate(|log| {
+            let mut live = 0usize;
+            self.map.retain_sync(|_, slot| {
+                live += usize::from(!slot.is_expired(now));
+                false
+            });
             if let Some(log) = log {
                 log.append(&Op::Clear);
             }
+            live
         })?;
         self.listeners.notify(None);
-        Ok(())
+        Ok(removed)
+    }
+
+    /// Deletes the keys matching `prefix` at scan time as one crash-atomic batch.
+    pub fn delete_prefix(&self, prefix: &str) -> Result<usize> {
+        let ops = self
+            .keys_with_prefix(prefix)
+            .into_iter()
+            .map(|key| BatchOp::Delete { key })
+            .collect::<Vec<_>>();
+        if ops.is_empty() {
+            return Ok(0);
+        }
+        record::validate(&Op::Batch {
+            ops: &batch_subs(&ops),
+        })?;
+        let removed = self.mutate_atomically(|log| {
+            if let Some(log) = log {
+                log.append(&Op::Batch {
+                    ops: &batch_subs(&ops),
+                });
+            }
+            ops.iter()
+                .filter_map(|op| match op {
+                    BatchOp::Delete { key } if remove_live(&self.map, key) => {
+                        Some(CompactString::from(key.as_str()))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })?;
+        self.notify_keys(&removed);
+        Ok(removed.len())
     }
 }
 

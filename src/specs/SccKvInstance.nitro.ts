@@ -15,7 +15,10 @@ export interface SccKvInstance
   contains(key: string): boolean
   remove(key: string): boolean
   getAllKeys(): string[]
-  clearAll(): void
+  getKeysByPrefix(prefix: string): string[]
+  countByPrefix(prefix: string): number
+  deleteByPrefix(prefix: string): number
+  clearAll(): number
   flush(): void
   size(): number
   close(): void
@@ -47,6 +50,8 @@ export interface SccKvInstance
   containsAsync(key: string): Promise<boolean>
   removeAsync(key: string): Promise<boolean>
   getAllKeysAsync(): Promise<string[]>
+  getKeysByPrefixAsync(prefix: string): Promise<string[]>
+  deleteByPrefixAsync(prefix: string): Promise<number>
   clearAllAsync(): Promise<void>
   flushAsync(): Promise<void>
   setManyStringAsync(keys: string[], values: string[]): Promise<void>

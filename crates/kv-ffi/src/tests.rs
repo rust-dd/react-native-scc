@@ -97,7 +97,7 @@ fn round_trips_all_tags_and_persists() {
     assert_eq!(get_owned(h2, "n"), Some((1, num.to_vec())));
     assert_eq!(unsafe { scc_kv_remove(h2, "s".as_ptr(), 1) }, 1);
     assert_eq!(unsafe { scc_kv_remove(h2, "s".as_ptr(), 1) }, 0);
-    assert_eq!(unsafe { scc_kv_clear(h2) }, 0);
+    assert_eq!(unsafe { scc_kv_clear(h2) }, 4);
     assert_eq!(unsafe { scc_kv_len(h2) }, 0);
     assert_eq!(unsafe { scc_kv_close(h2) }, 0);
     unsafe { scc_kv_release(h2) };
@@ -407,4 +407,36 @@ fn stale_handle_close_keeps_reopened_store_usable() {
     for h in [a, b, c_handle] {
         unsafe { scc_kv_release(h) };
     }
+}
+
+#[test]
+fn prefix_calls_scope_keys_and_clear_reports_its_count() {
+    let id = c("prefix-ffi");
+    let h = unsafe { scc_kv_in_memory(id.as_ptr(), 0, 0) };
+    for k in ["user:a", "user:b", "other"] {
+        assert_eq!(set(h, k, 0, b"x"), 0);
+    }
+    let prefix = "user:";
+    let mut len = 0usize;
+    let ptr = unsafe { scc_kv_keys_with_prefix(h, prefix.as_ptr(), prefix.len(), &mut len) };
+    assert!(!ptr.is_null());
+    let packed = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+    unsafe { scc_kv_free(ptr, len) };
+    assert_eq!(packed.len(), 2 * (4 + "user:a".len()));
+
+    assert_eq!(
+        unsafe { scc_kv_count_prefix(h, prefix.as_ptr(), prefix.len()) },
+        2
+    );
+    assert_eq!(
+        unsafe { scc_kv_delete_prefix(h, prefix.as_ptr(), prefix.len()) },
+        2
+    );
+    assert_eq!(
+        unsafe { scc_kv_count_prefix(h, prefix.as_ptr(), prefix.len()) },
+        0
+    );
+    assert_eq!(unsafe { scc_kv_clear(h) }, 1);
+    assert_eq!(unsafe { scc_kv_close(h) }, 0);
+    unsafe { scc_kv_release(h) };
 }

@@ -78,7 +78,6 @@ export declare class KV {
     /** Views are cached per prefix, so a namespace created during render keeps its identity. */
     namespace(prefix: string): KV;
     getKeysByPrefix(prefix: string): string[];
-    private fullKeysByPrefix;
     /** Deletes the matching snapshot as one native crash-atomic WAL batch. */
     deleteByPrefix(prefix: string): number;
     observeJSON<T = unknown, S = T | undefined>(key: string, selector: (value: T | undefined) => S, listener: (selected: S) => void, equals?: (a: S, b: S) => boolean): KVSubscription;
@@ -125,7 +124,7 @@ export declare class KV {
     getManyAsync(keys: string[]): Promise<(string | undefined)[]>;
     private fullKey;
     private fullKeys;
-    private getFullKeysByPrefixAsync;
+    private toLocalKeys;
     private toLocalChangedKey;
 }
 export declare function createKV(options?: KVOptions): KV;

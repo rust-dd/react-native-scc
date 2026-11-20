@@ -69,7 +69,9 @@ fn write_wal(dir: &Path) -> Vec<u64> {
             TestOp::Delete(k) => {
                 store.delete(k).unwrap();
             }
-            TestOp::Clear => store.clear().unwrap(),
+            TestOp::Clear => {
+                store.clear().unwrap();
+            }
         }
         store.flush().unwrap();
         boundaries.push(std::fs::metadata(dir.join("crash.wal")).unwrap().len());

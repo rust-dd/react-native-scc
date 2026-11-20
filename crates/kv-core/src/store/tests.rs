@@ -469,3 +469,32 @@ fn ttl_keys_loaded_from_disk_are_swept() {
     }
     reopened.close().unwrap();
 }
+
+#[test]
+fn prefix_queries_and_deletes_see_only_live_matching_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let disk = Store::open(dir.path(), "prefix", fast_opts()).unwrap();
+    for store in [Store::in_memory(), disk] {
+        for key in ["user:1:a", "user:1:b", "user:2:a", "other"] {
+            store.set(key, Value::Num(1.0)).unwrap();
+        }
+        store
+            .set_with_ttl("user:1:gone", Value::Num(1.0), 1)
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = events.clone();
+        store.subscribe(move |key| sink.lock().unwrap().push(key.map(str::to_string)));
+
+        let mut keys = store.keys_with_prefix("user:1:");
+        keys.sort();
+        assert_eq!(keys, ["user:1:a", "user:1:b"]);
+        assert_eq!(store.count_with_prefix("user:"), 3);
+        assert_eq!(store.delete_prefix("user:1:").unwrap(), 2);
+        assert_eq!(store.delete_prefix("missing:").unwrap(), 0);
+        assert_eq!(events.lock().unwrap().len(), 2);
+        assert_eq!(store.clear().unwrap(), 2);
+        assert_eq!(store.len(), 0);
+        store.close().unwrap();
+    }
+}

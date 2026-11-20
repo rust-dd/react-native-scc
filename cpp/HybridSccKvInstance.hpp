@@ -126,28 +126,29 @@ public:
   }
 
   std::vector<std::string> getAllKeys() override {
-    size_t len = 0;
-    uint8_t* data = scc_kv_keys(_handle, &len);
-    if (data == nullptr) {
-      if (len == 1) throwLastError("getAllKeys");
-      return {};
-    }
-    std::vector<std::string> keys;
-    size_t off = 0;
-    while (off + 4 <= len) {
-      uint32_t n;
-      std::memcpy(&n, data + off, 4);
-      off += 4;
-      if (off + n > len) break;
-      keys.emplace_back(reinterpret_cast<const char*>(data + off), n);
-      off += n;
-    }
-    scc_kv_free(data, len);
-    return keys;
+    return keysWithPrefix(std::string(), "getAllKeys");
   }
 
-  void clearAll() override {
-    if (scc_kv_clear(_handle) != 0) throwLastError("clearAll");
+  std::vector<std::string> getKeysByPrefix(const std::string& prefix) override {
+    return keysWithPrefix(prefix, "getKeysByPrefix");
+  }
+
+  double countByPrefix(const std::string& prefix) override {
+    int64_t count = scc_kv_count_prefix(_handle, kptr(prefix), prefix.size());
+    if (count < 0) throwLastError("countByPrefix");
+    return static_cast<double>(count);
+  }
+
+  double deleteByPrefix(const std::string& prefix) override {
+    int64_t removed = scc_kv_delete_prefix(_handle, kptr(prefix), prefix.size());
+    if (removed < 0) throwLastError("deleteByPrefix");
+    return static_cast<double>(removed);
+  }
+
+  double clearAll() override {
+    int64_t removed = scc_kv_clear(_handle);
+    if (removed < 0) throwLastError("clearAll");
+    return static_cast<double>(removed);
   }
 
   void flush() override {
@@ -404,6 +405,18 @@ public:
     return Promise<std::vector<std::string>>::async([self] { return self->getAllKeys(); });
   }
 
+  std::shared_ptr<Promise<std::vector<std::string>>> getKeysByPrefixAsync(
+      const std::string& prefix) override {
+    auto self = shared(this);
+    return Promise<std::vector<std::string>>::async(
+        [self, prefix] { return self->getKeysByPrefix(prefix); });
+  }
+
+  std::shared_ptr<Promise<double>> deleteByPrefixAsync(const std::string& prefix) override {
+    auto self = shared(this);
+    return Promise<double>::async([self, prefix] { return self->deleteByPrefix(prefix); });
+  }
+
   std::shared_ptr<Promise<void>> clearAllAsync() override {
     auto self = shared(this);
     return Promise<void>::async([self] { self->clearAll(); });
@@ -469,6 +482,26 @@ private:
   // HybridObject is a virtual base of the spec, so a static cast is not possible.
   static std::shared_ptr<HybridSccKvInstance> shared(HybridSccKvInstance* self) {
     return std::dynamic_pointer_cast<HybridSccKvInstance>(self->shared_from_this());
+  }
+
+  std::vector<std::string> keysWithPrefix(const std::string& prefix, const char* op) {
+    size_t len = 0;
+    uint8_t* data = scc_kv_keys_with_prefix(_handle, kptr(prefix), prefix.size(), &len);
+    if (data == nullptr) {
+      if (len == 1) throwLastError(op);
+      return {};
+    }
+    std::vector<std::string> keys;
+    size_t off = 0;
+    while (off + 4 <= len) {
+      uint32_t n = readU32Le(data + off);
+      off += 4;
+      if (off + n > len) break;
+      keys.emplace_back(reinterpret_cast<const char*>(data + off), n);
+      off += n;
+    }
+    scc_kv_free(data, len);
+    return keys;
   }
 
   static const uint8_t* kptr(const std::string& s) {

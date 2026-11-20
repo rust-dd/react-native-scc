@@ -223,7 +223,7 @@ test('namespace scopes keys and prefix operations', () => {
   expect(kv.getString('user:2:name')).toBe('Grace')
 })
 
-test('namespaced prefix deletion uses one atomic native batch', () => {
+test('namespaced prefix deletion goes through one native prefix delete', () => {
   const kv = createKV({ id: 'prefix-batch' })
   const namespace = kv.namespace('user')
   namespace.set('cache:a', 'a')
@@ -233,31 +233,26 @@ test('namespaced prefix deletion uses one atomic native batch', () => {
   const native = (
     kv as unknown as {
       native: {
-        applyBatch(packed: ArrayBuffer): void
+        deleteByPrefix(prefix: string): number
         remove(key: string): boolean
       }
     }
   ).native
-  const batchSpy = jest.spyOn(native, 'applyBatch')
+  const deleteSpy = jest.spyOn(native, 'deleteByPrefix')
   const removeSpy = jest.spyOn(native, 'remove')
 
   expect(namespace.deleteByPrefix('cache:')).toBe(2)
-
-  expect(batchSpy).toHaveBeenCalledTimes(1)
+  expect(deleteSpy).toHaveBeenCalledWith('user:cache:')
   expect(removeSpy).not.toHaveBeenCalled()
   expect(namespace.getAllKeys()).toEqual(['keep'])
   expect(kv.getString('other:cache:a')).toBe('other')
 
-  batchSpy.mockClear()
   expect(namespace.clearAll()).toBe(1)
-  expect(batchSpy).toHaveBeenCalledTimes(1)
-  expect(removeSpy).not.toHaveBeenCalled()
+  expect(deleteSpy).toHaveBeenLastCalledWith('user:')
   expect(namespace.getAllKeys()).toEqual([])
   expect(kv.getString('other:cache:a')).toBe('other')
-
-  batchSpy.mockClear()
   expect(namespace.deleteByPrefix('missing:')).toBe(0)
-  expect(batchSpy).not.toHaveBeenCalled()
+  expect(kv.clearAll()).toBe(1)
 })
 
 test('namespaced async key operations stay on native async paths', async () => {
@@ -270,29 +265,28 @@ test('namespaced async key operations stay on native async paths', async () => {
     kv as unknown as {
       native: {
         getAllKeys(): string[]
-        getAllKeysAsync(): Promise<string[]>
-        remove(key: string): boolean
-        removeAsync(key: string): Promise<boolean>
-        applyBatch(packed: ArrayBuffer): void
+        getKeysByPrefix(prefix: string): string[]
+        getKeysByPrefixAsync(prefix: string): Promise<string[]>
+        deleteByPrefix(prefix: string): number
+        deleteByPrefixAsync(prefix: string): Promise<number>
       }
     }
   ).native
-  const getSyncSpy = jest.spyOn(native, 'getAllKeys')
-  const getAsyncSpy = jest.spyOn(native, 'getAllKeysAsync')
-  const removeSyncSpy = jest.spyOn(native, 'remove')
-  const removeAsyncSpy = jest.spyOn(native, 'removeAsync')
-  const batchSpy = jest.spyOn(native, 'applyBatch')
+  const syncKeys = jest.spyOn(native, 'getKeysByPrefix')
+  const asyncKeys = jest.spyOn(native, 'getKeysByPrefixAsync')
+  const allKeys = jest.spyOn(native, 'getAllKeys')
+  const syncDelete = jest.spyOn(native, 'deleteByPrefix')
+  const asyncDelete = jest.spyOn(native, 'deleteByPrefixAsync')
 
   await expect(namespace.getAllKeysAsync()).resolves.toEqual(['a', 'b'])
-  expect(getAsyncSpy).toHaveBeenCalledTimes(1)
-  expect(getSyncSpy).not.toHaveBeenCalled()
+  expect(asyncKeys).toHaveBeenCalledWith('scope:')
+  expect(syncKeys).not.toHaveBeenCalled()
+  expect(allKeys).not.toHaveBeenCalled()
 
   await namespace.clearAllAsync()
-  expect(getAsyncSpy).toHaveBeenCalledTimes(2)
-  expect(batchSpy).toHaveBeenCalledTimes(1)
-  expect(removeAsyncSpy).not.toHaveBeenCalled()
-  expect(removeSyncSpy).not.toHaveBeenCalled()
-  expect(namespace.getAllKeys()).toEqual([])
+  expect(asyncDelete).toHaveBeenCalledWith('scope:')
+  expect(syncDelete).not.toHaveBeenCalled()
+  expect(namespace.size).toBe(0)
   expect(kv.getString('outside')).toBe('outside')
 })
 

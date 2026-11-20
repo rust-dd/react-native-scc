@@ -254,6 +254,17 @@ pub unsafe extern "C" fn scc_kv_remove(h: *mut SccKvStore, key: *const u8, key_l
 /// NULL with *out_len = 0. Error: NULL with *out_len = 1.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn scc_kv_keys(h: *mut SccKvStore, out_len: *mut usize) -> *mut u8 {
+    unsafe { scc_kv_keys_with_prefix(h, std::ptr::null(), 0, out_len) }
+}
+
+/// Live keys starting with `prefix`, packed like `scc_kv_keys`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn scc_kv_keys_with_prefix(
+    h: *mut SccKvStore,
+    prefix: *const u8,
+    prefix_len: usize,
+    out_len: *mut usize,
+) -> *mut u8 {
     if out_len.is_null() {
         set_error("out_len is null");
         return std::ptr::null_mut();
@@ -261,8 +272,9 @@ pub unsafe extern "C" fn scc_kv_keys(h: *mut SccKvStore, out_len: *mut usize) ->
     unsafe { *out_len = 1 };
     guard(std::ptr::null_mut(), || {
         let s = unsafe { store(h) }?;
+        let prefix = unsafe { key_str(prefix, prefix_len) }?;
         let mut buf = Vec::new();
-        for key in s.store.keys() {
+        for key in s.store.keys_with_prefix(prefix) {
             buf.extend_from_slice(&(key.len() as u32).to_le_bytes());
             buf.extend_from_slice(key.as_bytes());
         }
@@ -272,13 +284,41 @@ pub unsafe extern "C" fn scc_kv_keys(h: *mut SccKvStore, out_len: *mut usize) ->
     })
 }
 
-/// 0 ok, -1 error.
+/// Number of live keys starting with `prefix`, or -1 on error.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn scc_kv_clear(h: *mut SccKvStore) -> i32 {
+pub unsafe extern "C" fn scc_kv_count_prefix(
+    h: *mut SccKvStore,
+    prefix: *const u8,
+    prefix_len: usize,
+) -> i64 {
     guard(-1, || {
         let s = unsafe { store(h) }?;
-        s.store.clear().map_err(|e| e.to_string())?;
-        Ok(0)
+        let prefix = unsafe { key_str(prefix, prefix_len) }?;
+        Ok(s.store.count_with_prefix(prefix) as i64)
+    })
+}
+
+/// Deletes the live keys starting with `prefix` as one crash-atomic batch.
+/// Returns how many it removed, or -1 on error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn scc_kv_delete_prefix(
+    h: *mut SccKvStore,
+    prefix: *const u8,
+    prefix_len: usize,
+) -> i64 {
+    guard(-1, || {
+        let s = unsafe { store(h) }?;
+        let prefix = unsafe { key_str(prefix, prefix_len) }?;
+        Ok(s.store.delete_prefix(prefix).map_err(|e| e.to_string())? as i64)
+    })
+}
+
+/// Number of live keys removed, or -1 on error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn scc_kv_clear(h: *mut SccKvStore) -> i64 {
+    guard(-1, || {
+        let s = unsafe { store(h) }?;
+        Ok(s.store.clear().map_err(|e| e.to_string())? as i64)
     })
 }
 
