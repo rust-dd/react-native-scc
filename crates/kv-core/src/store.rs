@@ -65,9 +65,8 @@ pub struct Store {
     ttl_sweeper: OnceLock<crate::sweeper::SweeperHandle>,
     ttl_sweep_interval: Duration,
     ttl_epoch: Arc<AtomicU64>,
-    /// Read side of the compaction gate: multi-op batches hold it across map
-    /// application + WAL append so the writer's compact() (write side) can
-    /// never snapshot a half-applied batch and truncate its record away.
+    /// Multi-op batches hold the read side across map apply and WAL append, so compaction never
+    /// snapshots a half-applied batch and truncates its record away.
     compact_gate: Arc<RwLock<()>>,
     mutation_gate: Option<Arc<Mutex<()>>>,
     ungated_mutations: AtomicUsize,
@@ -263,8 +262,7 @@ impl Store {
         self.with_value(key, Value::clone)
     }
 
-    /// Zero-clone read: runs `f` against the stored value under the bucket
-    /// guard. Keep `f` short — it blocks writers to the same bucket.
+    /// Zero-clone read under the bucket guard: keep `f` short, it blocks writers to that bucket.
     /// Expired keys read as missing.
     pub fn with_value<R>(&self, key: &str, f: impl FnOnce(&Value) -> R) -> Option<R> {
         self.map

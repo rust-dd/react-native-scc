@@ -1,9 +1,5 @@
 import { type KV } from '../kv';
-/**
- * redux-persist storage engine over a KV instance:
- *
- * persistReducer({ key: 'root', storage: createSccStorage() }, rootReducer)
- */
+/** redux-persist storage: `persistReducer({ key: 'root', storage: createSccStorage() }, reducer)`. */
 export declare function createSccStorage(kv?: KV): {
     getItem: (key: string) => Promise<string | null>;
     setItem: (key: string, value: string) => Promise<void>;

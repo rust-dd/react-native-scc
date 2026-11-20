@@ -1,10 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Build kv-ffi for iOS targets and create an xcframework.
-#
-# Requirements:
-#   rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+# Builds kv-ffi into an xcframework for the aarch64-apple-ios, aarch64-apple-ios-sim and x86_64-apple-ios targets.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"

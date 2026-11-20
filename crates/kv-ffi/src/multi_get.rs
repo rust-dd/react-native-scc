@@ -8,11 +8,8 @@ use crate::{SccKvStore, data_slice, guard, store};
 
 const MISSING_VALUE: u32 = u32::MAX;
 
-/// Reads packed UTF-8 keys in one call. Input entries are repeated
-/// `[u32 key_len LE][key]`; output entries are `[u32 value_len LE][value]`,
-/// with `0xFFFF_FFFF` denoting a missing, expired, or non-string value. The
-/// returned buffer must be released with `scc_kv_free`. Returns 0 on success,
-/// -1 on error.
+/// Reads packed `[u32 key_len LE][key]` keys into `[u32 value_len LE][value]` entries (free with
+/// `scc_kv_free`); `0xFFFF_FFFF` marks missing, expired or non-string. 0 ok, -1 error.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn scc_kv_get_many_str(
     h: *mut SccKvStore,

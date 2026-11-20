@@ -8,11 +8,7 @@ import {
   type KVSubscription,
 } from '../kv'
 
-/**
- * Atom persisted in a KV instance. Reads synchronously on init and
- * reacts to writes made outside jotai (other KV handles included).
- * Setting it to `undefined` deletes the key.
- */
+/** Atom persisted in a KV store: reads synchronously on init, follows writes from any handle, and `undefined` deletes. */
 export function atomWithKV<T>(key: string, initialValue: T, kv?: KV) {
   const store = () => kv ?? getDefaultKV()
   // The change event of our own write must hand back the written object, not a reparsed copy.

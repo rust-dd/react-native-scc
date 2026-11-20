@@ -147,9 +147,8 @@ fn batches_race_compaction_and_reopen_consistent() {
     let payload = "x".repeat(512);
     {
         let s = Store::open(dir.path(), "db", opts.clone()).unwrap();
-        // Padded batches keep the writer compacting while the caller holds the
-        // compaction gate's read side — a deadlocked gate hangs this test, and
-        // the reopen below must always see a and b moved together.
+        // Padded batches keep the writer compacting while batches hold the gate's read side: a
+        // deadlock hangs here, and the reopen must always see a and b move together.
         for i in 0..300 {
             s.apply_batch(&[
                 BatchOp::Set {

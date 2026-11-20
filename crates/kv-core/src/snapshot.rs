@@ -109,12 +109,8 @@ fn write_atomic_with_frame_limit(
     )
 }
 
-/// Maps a file read-only for recovery-time parsing without copying it into
-/// memory first. `Ok(None)` when the file is missing or empty.
-///
-/// The mapping assumes no concurrent writer — guaranteed at open time because
-/// the registry hands out a single store per (dir, id) and the WAL thread has
-/// not started yet.
+/// Maps a file read-only for recovery; `Ok(None)` when missing or empty. Only safe at open: the
+/// file lock rules out other writers and this store's WAL thread has not started.
 pub(crate) fn map_file(path: &Path) -> Result<Option<memmap2::Mmap>> {
     let file = match fs::File::open(path) {
         Ok(f) => f,

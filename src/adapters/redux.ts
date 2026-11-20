@@ -1,10 +1,6 @@
 import { getDefaultKV, type KV } from '../kv'
 
-/**
- * redux-persist storage engine over a KV instance:
- *
- * persistReducer({ key: 'root', storage: createSccStorage() }, rootReducer)
- */
+/** redux-persist storage: `persistReducer({ key: 'root', storage: createSccStorage() }, reducer)`. */
 export function createSccStorage(kv?: KV) {
   const store = () => kv ?? getDefaultKV()
   return {

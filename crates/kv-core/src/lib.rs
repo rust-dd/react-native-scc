@@ -65,9 +65,8 @@ pub(crate) struct Doomed {
     pub saw_ttl: bool,
 }
 
-/// Selects keys to reclaim in one sweep. Expired keys are capped at 4096 per
-/// pass; the live count stays exact so the cap never inflates eviction.
-/// `ttl_free` means no slot can expire, which skips the scan entirely.
+/// Expired keys are capped at 4096 per pass, but the live count stays exact so the cap never
+/// inflates eviction. `ttl_free` (no slot can expire) skips the scan.
 pub(crate) fn compute_doomed(
     map: &ValueMap,
     now: u64,

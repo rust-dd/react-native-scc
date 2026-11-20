@@ -90,9 +90,8 @@ pub unsafe extern "C" fn scc_kv_apply_batch(
     })
 }
 
-/// Opens (or returns the already-open) persistent store `id` under `dir`.
-/// A non-empty `enc_key` passphrase enables encryption at rest (the 32-byte
-/// cipher key is derived via SHA-256). Returns NULL on error.
+/// Opens (or returns the already-open) store `id` under `dir`; NULL on error. A non-empty `enc_key`
+/// enables encryption at rest with SHA-256(`enc_key`) as the cipher key.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn scc_kv_open(
     dir: *const c_char,
@@ -341,10 +340,8 @@ pub unsafe extern "C" fn scc_kv_len(h: *mut SccKvStore) -> u64 {
     })
 }
 
-/// Fast-path string/bytes/json read into a caller-provided buffer, avoiding
-/// heap allocation. Returns 1 found (with `*out_len` set; bytes are copied
-/// only when `*out_len <= cap` — otherwise call again with a larger buffer),
-/// 0 missing or type mismatch, -1 error.
+/// Reads a string, bytes or JSON value into `buf`: 1 found (copied only when `*out_len <= cap`, else
+/// retry with a larger buffer), 0 missing or another type, -1 error.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn scc_kv_get_raw(
     h: *mut SccKvStore,
@@ -511,9 +508,8 @@ pub unsafe extern "C" fn scc_kv_set_bool(
     })
 }
 
-/// Batch string set. `data` holds `count` packed entries, each
-/// `[u32 key_len LE][key][u32 val_len LE][val]`. All records land in a single
-/// WAL append; a malformed buffer applies nothing. 0 ok, -1 error.
+/// Sets `count` packed `[u32 key_len LE][key][u32 val_len LE][val]` strings in one WAL append; a
+/// malformed buffer applies nothing. 0 ok, -1 error.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn scc_kv_set_many_str(
     h: *mut SccKvStore,

@@ -149,9 +149,8 @@ fn advance(data: &[u8], off: usize, by: usize, what: &str) -> Result<usize, Stri
     }
 }
 
-/// Decodes the transaction batch buffer built by the TS layer: `[u32 count]`
-/// then `count` ops, each `[u8 kind][u32 key_len][key]` and, for `kind == 1`
-/// (set), `[u8 tag][u32 val_len][val]`. `kind == 0` is delete.
+/// Decodes the TS transaction buffer: `[u32 count]`, then per op `[u8 kind][u32 key_len][key]`, plus
+/// `[u8 tag][u32 val_len][val]` for a set (`kind == 1`); `kind == 0` deletes.
 pub(crate) fn decode_batch(data: &[u8]) -> Result<Vec<kv_core::BatchOp>, String> {
     let mut off = 0usize;
     let count = read_u32(data, &mut off)? as usize;

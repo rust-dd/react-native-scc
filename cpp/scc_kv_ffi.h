@@ -27,9 +27,8 @@ extern "C" {
 int32_t scc_kv_apply_batch(struct SccKvStore *handle, const uint8_t *ptr, uintptr_t len);
 
 /**
- * Opens (or returns the already-open) persistent store `id` under `dir`.
- * A non-empty `enc_key` passphrase enables encryption at rest (the 32-byte
- * cipher key is derived via SHA-256). Returns NULL on error.
+ * Opens (or returns the already-open) store `id` under `dir`; NULL on error. A non-empty `enc_key`
+ * enables encryption at rest with SHA-256(`enc_key`) as the cipher key.
  */
 struct SccKvStore *scc_kv_open(const char *dir,
                                const char *id,
@@ -131,10 +130,8 @@ int32_t scc_kv_flush(struct SccKvStore *h);
 uint64_t scc_kv_len(struct SccKvStore *h);
 
 /**
- * Fast-path string/bytes/json read into a caller-provided buffer, avoiding
- * heap allocation. Returns 1 found (with `*out_len` set; bytes are copied
- * only when `*out_len <= cap` — otherwise call again with a larger buffer),
- * 0 missing or type mismatch, -1 error.
+ * Reads a string, bytes or JSON value into `buf`: 1 found (copied only when `*out_len <= cap`, else
+ * retry with a larger buffer), 0 missing or another type, -1 error.
  */
 int32_t scc_kv_get_raw(struct SccKvStore *h,
                        const uint8_t *key,
@@ -186,9 +183,8 @@ int32_t scc_kv_set_f64(struct SccKvStore *h, const uint8_t *key, uintptr_t key_l
 int32_t scc_kv_set_bool(struct SccKvStore *h, const uint8_t *key, uintptr_t key_len, bool value);
 
 /**
- * Batch string set. `data` holds `count` packed entries, each
- * `[u32 key_len LE][key][u32 val_len LE][val]`. All records land in a single
- * WAL append; a malformed buffer applies nothing. 0 ok, -1 error.
+ * Sets `count` packed `[u32 key_len LE][key][u32 val_len LE][val]` strings in one WAL append; a
+ * malformed buffer applies nothing. 0 ok, -1 error.
  */
 int32_t scc_kv_set_many_str(struct SccKvStore *h,
                             const uint8_t *data,
@@ -211,10 +207,8 @@ int32_t scc_kv_unsubscribe(struct SccKvStore *h, uint64_t id);
 void scc_kv_free(uint8_t *ptr, uintptr_t len);
 
 /**
- * Returns and clears the most recent error on this thread as a heap CString,
- * or NULL. Only call after an FFI function reports failure; successful calls
- * intentionally do not clear a prior, unread error. Caller frees the result
- * with `scc_kv_free_cstring`.
+ * Returns and clears this thread's last error (free with `scc_kv_free_cstring`), or NULL. Only
+ * meaningful after a failed call: successful calls do not clear an unread error.
  */
 char *scc_kv_last_error(void);
 
@@ -224,11 +218,8 @@ char *scc_kv_last_error(void);
 void scc_kv_free_cstring(char *s);
 
 /**
- * Reads packed UTF-8 keys in one call. Input entries are repeated
- * `[u32 key_len LE][key]`; output entries are `[u32 value_len LE][value]`,
- * with `0xFFFF_FFFF` denoting a missing, expired, or non-string value. The
- * returned buffer must be released with `scc_kv_free`. Returns 0 on success,
- * -1 on error.
+ * Reads packed `[u32 key_len LE][key]` keys into `[u32 value_len LE][value]` entries (free with
+ * `scc_kv_free`); `0xFFFF_FFFF` marks missing, expired or non-string. 0 ok, -1 error.
  */
 int32_t scc_kv_get_many_str(struct SccKvStore *h,
                             const uint8_t *data,

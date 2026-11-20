@@ -164,9 +164,8 @@ public:
     if (scc_kv_close(_handle) != 0) throwLastError("close");
   }
 
-  // Nitro JS callbacks are safely invokable from any thread — they dispatch
-  // onto the JS runtime. The trampoline may fire on the JS thread (sync
-  // mutations) or an async pool thread; both funnel through that dispatch.
+  // The trampoline fires on the JS thread or an async pool thread; Nitro callbacks dispatch to the
+  // JS runtime from either.
   double addListener(const std::function<void()>& onChange) override {
     auto box = std::make_unique<ListenerBox>();
     box->onChange = onChange;

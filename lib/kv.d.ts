@@ -52,12 +52,7 @@ export declare class KV {
     private readonly hub;
     private readonly keyPrefix;
     constructor(native: SccKvInstance, keyPrefix?: string, ownsNative?: boolean, storeKey?: string | undefined, hub?: StoreHub);
-    /**
-     * Fires after every mutation of the underlying store — including writes
-     * made through other KV objects opened with the same id. `key` is null
-     * after clearAll ("everything changed"). Delivery is asynchronous on the
-     * JS thread.
-     */
+    /** Fires asynchronously on the JS thread after every mutation from any handle; `key` is null after clearAll. */
     addOnValueChangedListener(listener: KVChangeListener): KVSubscription;
     /** Like addOnValueChangedListener, but only for `key` (and clearAll, as null). */
     addOnKeyChangedListener(key: string, listener: KVChangeListener): KVSubscription;
@@ -66,14 +61,8 @@ export declare class KV {
     private unsubscribe;
     private static deliver;
     private dispatch;
-    /**
-     * Stages reads and writes through `tx`, then commits every staged write as one
-     * crash-atomic native batch (one WAL record — all of it survives a crash, or
-     * none of it). The callback must be synchronous and sees prior staged writes.
-     * Concurrent readers can observe individual in-memory key updates while the
-     * commit is applied. If the native commit throws (e.g. a background I/O error),
-     * no listener fires and the in-process view may be ahead of a restart.
-     */
+    /** Commits staged writes as one crash-atomic WAL record (readers may see keys land one by one); the callback must be sync.
+     *  If the commit throws, no listener fires and memory may be ahead of what survives a restart. */
     transaction<T>(callback: (tx: KVTransaction) => T): T;
     /** Views are cached per prefix, so a namespace created during render keeps its identity. */
     namespace(prefix: string): KV;
@@ -100,10 +89,7 @@ export declare class KV {
     /** Batch string read; missing keys come back as undefined. */
     getMany(keys: string[]): (string | undefined)[];
     get size(): number;
-    /**
-     * Closes this root store and releases its native change listener. Namespace
-     * views are non-owning and must be discarded instead of closed.
-     */
+    /** Closes the root store and its namespace views; a view itself cannot be closed. */
     close(): void;
     get [INTERNAL_IS_CLOSED](): boolean;
     private detach;

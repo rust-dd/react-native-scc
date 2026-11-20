@@ -134,11 +134,8 @@ function encodeValue(value: KVValue): { tag: number; bytes: Uint8Array } {
   return { tag: TAG_BYTES, bytes: new Uint8Array(asBuffer(value)) }
 }
 
-/**
- * Packs a transaction's staged ops into the wire format decoded by the native
- * `applyBatch`: `[u32 count]` then each op `[u8 kind][u32 keyLen][key]` and,
- * for a set (`kind === 1`), `[u8 tag][u32 valLen][val]`. All little-endian.
- */
+// Native applyBatch format, little-endian: `[u32 count]`, then per op `[u8 kind][u32 keyLen][key]`,
+// plus `[u8 tag][u32 valLen][val]` for a set (kind 1).
 function encodeBatch(ops: EncodedOp[]): ArrayBuffer {
   const parts = ops.map((op) => ({ ...op, keyBytes: utf8Encode(op.key) }))
   let size = 4
@@ -342,12 +339,7 @@ export class KV {
     }
   }
 
-  /**
-   * Fires after every mutation of the underlying store — including writes
-   * made through other KV objects opened with the same id. `key` is null
-   * after clearAll ("everything changed"). Delivery is asynchronous on the
-   * JS thread.
-   */
+  /** Fires asynchronously on the JS thread after every mutation from any handle; `key` is null after clearAll. */
   addOnValueChangedListener(listener: KVChangeListener): KVSubscription {
     return this.subscribe(listener, undefined)
   }
@@ -450,14 +442,8 @@ export class KV {
     }
   }
 
-  /**
-   * Stages reads and writes through `tx`, then commits every staged write as one
-   * crash-atomic native batch (one WAL record — all of it survives a crash, or
-   * none of it). The callback must be synchronous and sees prior staged writes.
-   * Concurrent readers can observe individual in-memory key updates while the
-   * commit is applied. If the native commit throws (e.g. a background I/O error),
-   * no listener fires and the in-process view may be ahead of a restart.
-   */
+  /** Commits staged writes as one crash-atomic WAL record (readers may see keys land one by one); the callback must be sync.
+   *  If the commit throws, no listener fires and memory may be ahead of what survives a restart. */
   transaction<T>(callback: (tx: KVTransaction) => T): T {
     const tx = new TransactionContext(this)
     const result = callback(tx)
@@ -646,10 +632,7 @@ export class KV {
     return this.native.size()
   }
 
-  /**
-   * Closes this root store and releases its native change listener. Namespace
-   * views are non-owning and must be discarded instead of closed.
-   */
+  /** Closes the root store and its namespace views; a view itself cannot be closed. */
   close(): void {
     if (!this.ownsNative) {
       throw new Error('Cannot close a KV namespace; close its root KV instance')

@@ -160,8 +160,7 @@ tasks.configureEach { task ->
 }
 
 dependencies {
-  // For < 0.71, this will be from the local maven repo
-  // For > 0.71, this will be replaced by `com.facebook.react:react-android:$version` by react gradle plugin
+  // The React Gradle Plugin resolves this to react-android:$version.
   //noinspection GradleDynamicVersion
   implementation "com.facebook.react:react-native:+"
 
@@ -169,11 +168,8 @@ dependencies {
   implementation project(":react-native-nitro-modules")
 }
 
-// Without this `react { }` block, the React Gradle Plugin scans every npm
-// package in the app and emits view-manager codegen for all of them into our
-// AAR, then the same classes appear again from each real owner (e.g.
-// react-native-screens) and D8 fails with duplicate-type errors. Pinning
-// `libraryName` keeps codegen scoped to this lib alone.
+// Scopes codegen to this library; otherwise the plugin emits every package's view-manager codegen
+// into our AAR and D8 fails on the duplicate classes.
 if (isNewArchitectureEnabled()) {
   react {
     jsRootDir = file("../src/")

@@ -8,9 +8,8 @@ use crate::ValueMap;
 use crate::error::{Error, Result};
 use crate::notify::Listeners;
 
-/// Owns the in-memory store's background sweep thread. `stop()` (called from
-/// `Store::close` and `Drop`) signals shutdown and joins, so the sweeper never
-/// mutates or notifies past close.
+/// `stop()` (from `Store::close` and `Drop`) signals and joins, so the sweeper never mutates or
+/// notifies past close.
 pub(crate) struct SweeperHandle {
     shutdown: Arc<AtomicBool>,
     handle: Mutex<Option<JoinHandle<()>>>,

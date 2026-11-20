@@ -36,9 +36,7 @@ fn lock_registry() -> MutexGuard<'static, ()> {
         .unwrap_or_else(PoisonError::into_inner)
 }
 
-// Canonicalized so two spellings of the same directory (symlink, `./`,
-// trailing slash) can never open two stores — and two WAL writers — over the
-// same files.
+// Canonical, so two spellings of one directory never open two WAL writers over the same files.
 fn disk_key(dir: &Path, id: &str) -> String {
     let canonical = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
     format!("disk::{}::{id}", canonical.display())
