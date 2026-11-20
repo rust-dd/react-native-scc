@@ -26,6 +26,7 @@ export declare class KV {
     private readonly listeners;
     private readonly keyListeners;
     private nativeSubscription;
+    private deliveries;
     private readonly keyPrefix;
     private closed;
     constructor(native: SccKvInstance, keyPrefix?: string, ownsNative?: boolean, storeKey?: string | undefined);

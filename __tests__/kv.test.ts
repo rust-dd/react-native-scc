@@ -547,3 +547,44 @@ test('a failing native close still closes the handle and releases the default', 
   expect(getDefaultKV()).not.toBe(kv)
   getDefaultKV().close()
 })
+
+test('a listener that re-subscribes during delivery runs once per change', async () => {
+  for (const key of [undefined, 'k']) {
+    const kv = createKV({ id: `rearm-${key ?? 'all'}` })
+    let calls = 0
+    const arm = () => {
+      const listener = () => {
+        calls += 1
+        subscription.remove()
+        if (calls < 1000) arm()
+      }
+      const subscription =
+        key === undefined
+          ? kv.addOnValueChangedListener(listener)
+          : kv.addOnKeyChangedListener(key, listener)
+    }
+    if (key !== undefined) kv.addOnKeyChangedListener(key, () => {})
+    arm()
+    kv.set(key ?? 'a', 1)
+    await flushMicrotasks()
+    expect(calls).toBe(1)
+  }
+})
+
+test('a listener added during delivery skips changes made before it subscribed', async () => {
+  const kv = createKV({ id: 'late-subscriber' })
+  const late: Array<string | null> = []
+  let added = false
+  kv.addOnValueChangedListener(() => {
+    if (added) return
+    added = true
+    kv.addOnValueChangedListener((key) => late.push(key))
+  })
+  kv.set('a', 1)
+  kv.set('b', 2)
+  await flushMicrotasks()
+  expect(late).toEqual([])
+  kv.set('c', 3)
+  await flushMicrotasks()
+  expect(late).toEqual(['c'])
+})

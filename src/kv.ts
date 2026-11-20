@@ -285,7 +285,7 @@ function nativeCalls(native: SccKvInstance): NativeCalls {
   return typeof create === 'function' ? create.call(native) : native
 }
 
-type ListenerEntry = { listener: KVChangeListener }
+type ListenerEntry = { listener: KVChangeListener; since: number }
 
 let defaultInstance: KV | undefined
 let defaultOptions: KVOptions = {}
@@ -296,6 +296,7 @@ export class KV {
   private readonly listeners = new Set<ListenerEntry>()
   private readonly keyListeners = new Map<string, Set<ListenerEntry>>()
   private nativeSubscription: number | undefined
+  private deliveries = 0
   private readonly keyPrefix: string
 
   private closed = false
@@ -336,7 +337,7 @@ export class KV {
 
   private subscribe(listener: KVChangeListener, key: string | undefined): KVSubscription {
     if (this.closed) throw new Error('Cannot subscribe to a closed KV instance')
-    const entry = { listener }
+    const entry = { listener, since: this.deliveries }
     const entries = key === undefined ? this.listeners : this.keyEntries(key)
     entries.add(entry)
     try {
@@ -383,8 +384,11 @@ export class KV {
   private deliverChanges(): void {
     const id = this.nativeSubscription
     if (id === undefined) return
+    // Entries subscribed during this delivery have since === generation and are skipped.
+    const generation = ++this.deliveries
     let failure: { error: unknown } | undefined
     const notify = (entry: ListenerEntry, key: string | null) => {
+      if (entry.since >= generation) return
       try {
         entry.listener(key)
       } catch (error) {
