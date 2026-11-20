@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use super::framing::write_encrypted_frames;
 use super::{Durability, FlushAck, Log, Shared, WriterConfig};
+use crate::crypto::{self, MAX_FRAME_PLAINTEXT};
 use crate::error::Error;
 use crate::record;
 
@@ -109,9 +109,13 @@ impl Writer {
         }
         record::seal(&mut self.pending);
         let result = match &self.cfg.cipher {
-            Some(cipher) => {
-                write_encrypted_frames(&mut self.file, &self.cfg.wal_path, cipher, &self.pending)
-            }
+            Some(cipher) => crypto::write_encrypted_records(
+                &mut self.file,
+                &self.cfg.wal_path,
+                cipher,
+                &mut self.pending,
+                MAX_FRAME_PLAINTEXT,
+            ),
             None => self
                 .file
                 .write_all(&self.pending)

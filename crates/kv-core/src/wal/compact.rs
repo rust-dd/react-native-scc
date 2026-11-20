@@ -2,8 +2,8 @@ use std::io::Write;
 use std::sync::Arc;
 use std::time::Instant;
 
-use super::framing::write_encrypted_frames;
 use super::writer::{Writer, take_logged};
+use crate::crypto::{self, MAX_FRAME_PLAINTEXT};
 use crate::error::{Error, Result};
 use crate::record;
 use crate::snapshot;
@@ -22,7 +22,7 @@ impl Writer {
             take_logged(&mut log, &mut self.pending);
             drop(log);
             self.append_pending();
-            let records = snapshot::capture(&self.map);
+            let records = snapshot::capture(&self.map, self.snap_len as usize);
             self.after_capture();
             // Writes admitted during capture may be in the snapshot out of order, so both WALs replay them.
             let mut tail = Vec::new();
@@ -51,7 +51,7 @@ impl Writer {
         if self.crash_after_snapshot() {
             return;
         }
-        match self.replace_wal(&tail) {
+        match self.replace_wal(&mut tail) {
             Ok(len) => {
                 self.wal_len = len;
                 self.dirty = false;
@@ -62,7 +62,7 @@ impl Writer {
         }
     }
 
-    fn replace_wal(&mut self, tail: &[u8]) -> Result<u64> {
+    fn replace_wal(&mut self, tail: &mut [u8]) -> Result<u64> {
         let path = self.cfg.wal_path.clone();
         let tmp = path.with_extension("wal.tmp");
         let io = |p: &std::path::Path| {
@@ -78,7 +78,9 @@ impl Writer {
         let prefix = super::fresh_prefix(self.cfg.cipher.as_deref())?;
         file.write_all(&prefix).map_err(io(&tmp))?;
         let body = match &self.cfg.cipher {
-            Some(cipher) => write_encrypted_frames(&mut file, &tmp, cipher, tail)?,
+            Some(cipher) => {
+                crypto::write_encrypted_records(&mut file, &tmp, cipher, tail, MAX_FRAME_PLAINTEXT)?
+            }
             None => {
                 file.write_all(tail).map_err(io(&tmp))?;
                 tail.len() as u64

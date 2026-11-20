@@ -13,9 +13,9 @@ fn io_err(path: &Path, source: std::io::Error) -> Error {
     }
 }
 
-pub(crate) fn capture(map: &crate::ValueMap) -> Vec<u8> {
+pub(crate) fn capture(map: &crate::ValueMap, size_hint: usize) -> Vec<u8> {
     let now = crate::now_ms();
-    let mut records = Vec::new();
+    let mut records = Vec::with_capacity(size_hint);
     map.iter_sync(|k, slot| {
         if !slot.is_expired(now) {
             if slot.expires_at_ms == 0 {
@@ -52,7 +52,7 @@ pub(crate) fn write_atomic(
     map: &crate::ValueMap,
     cipher: Option<&Cipher>,
 ) -> Result<u64> {
-    persist(path, capture(map), cipher)
+    persist(path, capture(map, 0), cipher)
 }
 
 fn persist_impl(
@@ -67,9 +67,13 @@ fn persist_impl(
     let header = crypto::header_bytes(cipher.is_some());
     file.write_all(&header).map_err(|e| io_err(&tmp, e))?;
     let body_len = match cipher {
-        Some(cipher) => {
-            write_encrypted_records(&mut file, &tmp, cipher, records, frame_plaintext_limit)?
-        }
+        Some(cipher) => crypto::write_encrypted_records(
+            &mut file,
+            &tmp,
+            cipher,
+            records,
+            frame_plaintext_limit,
+        )?,
         None => {
             file.write_all(records).map_err(|e| io_err(&tmp, e))?;
             records.len() as u64
@@ -90,80 +94,6 @@ pub(crate) fn sync_parent(path: &Path) {
     }
 }
 
-fn write_encrypted_records(
-    file: &mut fs::File,
-    path: &Path,
-    cipher: &Cipher,
-    records: &[u8],
-    frame_plaintext_limit: usize,
-) -> Result<u64> {
-    let mut framed = Vec::new();
-    if records.is_empty() {
-        return write_cipher_frame(file, path, cipher, records, &mut framed);
-    }
-    let mut frame_start = 0usize;
-    let mut record_start = 0usize;
-    let mut written = 0u64;
-    while record_start < records.len() {
-        let record_end = encoded_record_end(records, record_start)?;
-        if record_end - record_start > frame_plaintext_limit {
-            return Err(Error::Crypto(format!(
-                "encoded record exceeds encryption frame limit: {} bytes",
-                record_end - record_start
-            )));
-        }
-        if record_start > frame_start && record_end - frame_start > frame_plaintext_limit {
-            written += write_cipher_frame(
-                file,
-                path,
-                cipher,
-                &records[frame_start..record_start],
-                &mut framed,
-            )?;
-            frame_start = record_start;
-        }
-        record_start = record_end;
-    }
-    written += write_cipher_frame(file, path, cipher, &records[frame_start..], &mut framed)?;
-    Ok(written)
-}
-
-fn encoded_record_end(records: &[u8], offset: usize) -> Result<usize> {
-    let length_end = offset
-        .checked_add(4)
-        .ok_or_else(|| Error::Crypto("snapshot record length overflow".to_string()))?;
-    let payload_len = u32::from_le_bytes(
-        records
-            .get(offset..length_end)
-            .ok_or_else(|| Error::Crypto("truncated encoded snapshot record".to_string()))?
-            .try_into()
-            .unwrap(),
-    ) as usize;
-    let record_end = length_end
-        .checked_add(4)
-        .and_then(|header_end| header_end.checked_add(payload_len))
-        .ok_or_else(|| Error::Crypto("snapshot record length overflow".to_string()))?;
-    if record_end > records.len() {
-        return Err(Error::Crypto(
-            "truncated encoded snapshot record".to_string(),
-        ));
-    }
-    Ok(record_end)
-}
-
-fn write_cipher_frame(
-    file: &mut fs::File,
-    path: &Path,
-    cipher: &Cipher,
-    plaintext: &[u8],
-    framed: &mut Vec<u8>,
-) -> Result<u64> {
-    framed.clear();
-    cipher.encrypt_frame(plaintext, framed)?;
-    file.write_all(framed).map_err(|e| io_err(path, e))?;
-    Ok(framed.len() as u64)
-}
-
 #[cfg(test)]
 fn write_atomic_with_frame_limit(
     path: &Path,
@@ -171,7 +101,12 @@ fn write_atomic_with_frame_limit(
     cipher: &Cipher,
     frame_plaintext_limit: usize,
 ) -> Result<u64> {
-    persist_impl(path, &mut capture(map), Some(cipher), frame_plaintext_limit)
+    persist_impl(
+        path,
+        &mut capture(map, 0),
+        Some(cipher),
+        frame_plaintext_limit,
+    )
 }
 
 /// Maps a file read-only for recovery-time parsing without copying it into
@@ -201,7 +136,7 @@ pub(crate) fn capacity_hint(path: &Path) -> Result<usize> {
     let data: &[u8] = &mapped;
     let (format, mut offset) = crypto::parse_header(data);
     if matches!(format, FileFormat::V1 { encrypted: true }) {
-        return Ok(data.len() / 64);
+        return Ok(0);
     }
     let mut count = 0;
     while let Some(header) = data.get(offset..offset.saturating_add(8)) {

@@ -54,10 +54,6 @@ pub(crate) fn new_value_map() -> ValueMap {
     ValueMap::with_hasher(FastState::default())
 }
 
-pub(crate) fn new_value_map_with_capacity(capacity: usize) -> ValueMap {
-    ValueMap::with_capacity_and_hasher(capacity, FastState::default())
-}
-
 /// Selects keys to reclaim in one sweep, split by why they are doomed:
 /// `expired` keys (capped at 4096 per pass) must be re-checked for expiry at
 /// removal time — a concurrent rewrite makes them live again — while `evicted`

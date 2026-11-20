@@ -177,13 +177,14 @@ impl Store {
         }
         let cipher = opts.encryption_key.map(|k| Arc::new(Cipher::new(&k)));
         let listeners = Arc::new(Listeners::new());
-        let map = Arc::new(crate::new_value_map_with_capacity(snapshot::capacity_hint(
-            &snap_path,
-        )?));
+        let map = Arc::new(crate::new_value_map());
+        // A temporary reservation, unlike with_capacity, lets the table shrink once keys are deleted.
+        let reserved = map.reserve(snapshot::capacity_hint(&snap_path)?);
         let compact_gate = Arc::new(RwLock::new(()));
         let snap_len = snapshot::load(&snap_path, &map, cipher.as_deref())?;
         let snapshot_verified_key = snap_len > crate::crypto::HEADER_LEN as u64;
         let wal_len = replay_wal(&wal_path, &map, cipher.as_deref(), snapshot_verified_key)?;
+        drop(reserved);
         let wal = WalHandle::spawn(
             WriterConfig {
                 wal_path,

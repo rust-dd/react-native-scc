@@ -14,7 +14,6 @@ use crate::notify::Listeners;
 use crate::record::{self, Op};
 
 mod compact;
-mod framing;
 mod sweep;
 mod writer;
 

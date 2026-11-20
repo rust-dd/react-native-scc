@@ -270,7 +270,7 @@ fn corrupt_first_wal_frame_after_an_authenticated_snapshot_is_truncated() {
     let _ = map.insert_sync("k".into(), crate::slot(Value::Num(1.0)));
     snapshot::persist(
         &dir.path().join("db.snap"),
-        snapshot::capture(&map),
+        snapshot::capture(&map, 0),
         Some(&cipher),
     )
     .unwrap();
@@ -385,4 +385,28 @@ fn the_same_files_cannot_be_opened_twice_until_closed() {
         .unwrap()
         .close()
         .unwrap();
+}
+
+#[test]
+fn large_encrypted_values_do_not_presize_a_huge_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let cipher = Cipher::new(&crate::derive_encryption_key(b"key"));
+    let map = crate::new_value_map();
+    for i in 0..4 {
+        let _ = map.insert_sync(
+            format!("blob{i}").into(),
+            crate::slot(Value::Bytes(vec![7; 1 << 20])),
+        );
+    }
+    snapshot::persist(
+        &dir.path().join("big.snap"),
+        snapshot::capture(&map, 0),
+        Some(&cipher),
+    )
+    .unwrap();
+
+    let store = Store::open(dir.path(), "big", encrypted_opts(b"key")).unwrap();
+    assert_eq!(store.len(), 4);
+    assert!(store.map.capacity() < 1024, "{}", store.map.capacity());
+    store.close().unwrap();
 }
