@@ -333,6 +333,21 @@ fn parse_batch(mut rest: &[u8]) -> Option<Vec<OwnedBatchSub>> {
     if rest.is_empty() { Some(ops) } else { None }
 }
 
+/// Applies the records at the start of `data` and returns how many bytes they covered.
+pub(crate) fn apply_all(map: &crate::ValueMap, data: &[u8]) -> usize {
+    let mut offset = 0usize;
+    while offset < data.len() {
+        match decode(&data[offset..]) {
+            DecodeOutcome::Record { op, consumed } => {
+                apply(map, op);
+                offset += consumed;
+            }
+            DecodeOutcome::NeedMore | DecodeOutcome::Corrupt => break,
+        }
+    }
+    offset
+}
+
 pub(crate) fn apply(map: &crate::ValueMap, op: OwnedOp) {
     match op {
         OwnedOp::Set { key, value } => insert_slot(map, key, value, 0),

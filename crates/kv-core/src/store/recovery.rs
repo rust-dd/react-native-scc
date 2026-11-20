@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::crypto::{self, Cipher, FileFormat, FrameOutcome};
 use crate::error::{Error, Result};
-use crate::record::{self, DecodeOutcome};
+use crate::record;
 use crate::snapshot;
 
 pub(super) fn replay_wal(
@@ -31,21 +31,7 @@ pub(super) fn replay_wal(
                     consumed,
                 } => {
                     decrypted_any = true;
-                    let mut rec_off = 0usize;
-                    let mut ok = true;
-                    while rec_off < plaintext.len() {
-                        match record::decode(&plaintext[rec_off..]) {
-                            DecodeOutcome::Record { op, consumed } => {
-                                record::apply(map, op);
-                                rec_off += consumed;
-                            }
-                            DecodeOutcome::NeedMore | DecodeOutcome::Corrupt => {
-                                ok = false;
-                                break;
-                            }
-                        }
-                    }
-                    if !ok {
+                    if record::apply_all(map, &plaintext) != plaintext.len() {
                         break;
                     }
                     offset += consumed;
@@ -64,15 +50,7 @@ pub(super) fn replay_wal(
             }
         }
     } else {
-        while offset < data.len() {
-            match record::decode(&data[offset..]) {
-                DecodeOutcome::Record { op, consumed } => {
-                    record::apply(map, op);
-                    offset += consumed;
-                }
-                DecodeOutcome::NeedMore | DecodeOutcome::Corrupt => break,
-            }
-        }
+        offset += record::apply_all(map, &data[offset..]);
     }
     let total = data.len();
     drop(mapped);

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::crypto::{self, Cipher, FileFormat, FrameOutcome};
 use crate::error::{Error, Result};
-use crate::record::{self, DecodeOutcome, Op};
+use crate::record::{self, Op};
 
 fn io_err(path: &Path, source: std::io::Error) -> Error {
     Error::Io {
@@ -166,23 +166,15 @@ pub(crate) fn check_key_matches(
 }
 
 fn decode_all(path: &Path, data: &[u8], base_offset: usize, map: &crate::ValueMap) -> Result<()> {
-    let mut offset = 0usize;
-    while offset < data.len() {
-        match record::decode(&data[offset..]) {
-            DecodeOutcome::Record { op, consumed } => {
-                record::apply(map, op);
-                offset += consumed;
-            }
-            DecodeOutcome::NeedMore | DecodeOutcome::Corrupt => {
-                return Err(Error::Corrupt {
-                    what: "snapshot",
-                    offset: (base_offset + offset) as u64,
-                    path: path.to_path_buf(),
-                });
-            }
-        }
+    let applied = record::apply_all(map, data);
+    if applied == data.len() {
+        return Ok(());
     }
-    Ok(())
+    Err(Error::Corrupt {
+        what: "snapshot",
+        offset: (base_offset + applied) as u64,
+        path: path.to_path_buf(),
+    })
 }
 
 pub(crate) fn load(path: &Path, map: &crate::ValueMap, cipher: Option<&Cipher>) -> Result<u64> {
