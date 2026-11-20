@@ -287,6 +287,20 @@ function nativeCalls(native: SccKvInstance): NativeCalls {
 
 type ListenerEntry = { listener: KVChangeListener; since: number }
 
+/** State a root store shares with its namespace views: one native listener, one fast path. */
+class StoreHub {
+  readonly members = new Set<KV>()
+  readonly views = new Map<string, KV>()
+  subscription: number | undefined
+  deliveries = 0
+  closed = false
+
+  constructor(
+    readonly native: SccKvInstance,
+    readonly calls: NativeCalls
+  ) {}
+}
+
 let defaultInstance: KV | undefined
 let defaultOptions: KVOptions = {}
 
@@ -295,21 +309,20 @@ export class KV {
   private readonly calls: NativeCalls
   private readonly listeners = new Set<ListenerEntry>()
   private readonly keyListeners = new Map<string, Set<ListenerEntry>>()
-  private nativeSubscription: number | undefined
-  private deliveries = 0
+  private readonly hub: StoreHub
   private readonly keyPrefix: string
-
-  private closed = false
 
   constructor(
     native: SccKvInstance,
     keyPrefix = '',
     private readonly ownsNative = true,
-    private readonly storeKey?: string
+    private readonly storeKey?: string,
+    hub?: StoreHub
   ) {
+    this.hub = hub ?? new StoreHub(native, nativeCalls(native))
     this.native = native
     this.keyPrefix = keyPrefix
-    this.calls = nativeCalls(native)
+    this.calls = this.hub.calls
     if (keyPrefix === '' && this.calls !== native) {
       // Fast-path functions ignore `this`, so a root store can expose them directly.
       this.getString = this.calls.getString
@@ -336,12 +349,14 @@ export class KV {
   }
 
   private subscribe(listener: KVChangeListener, key: string | undefined): KVSubscription {
-    if (this.closed) throw new Error('Cannot subscribe to a closed KV instance')
-    const entry = { listener, since: this.deliveries }
+    const hub = this.hub
+    if (hub.closed) throw new Error('Cannot subscribe to a closed KV instance')
+    const entry = { listener, since: hub.deliveries }
     const entries = key === undefined ? this.listeners : this.keyEntries(key)
     entries.add(entry)
+    hub.members.add(this)
     try {
-      this.nativeSubscription ??= this.native.addListener(() => this.deliverChanges())
+      hub.subscription ??= this.native.addListener(() => KV.deliver(hub))
     } catch (error) {
       this.unsubscribe(entries, entry, key)
       throw error
@@ -371,44 +386,59 @@ export class KV {
     ) {
       this.keyListeners.delete(key)
     }
-    if (
-      this.listeners.size === 0 &&
-      this.keyListeners.size === 0 &&
-      this.nativeSubscription !== undefined
-    ) {
-      this.native.removeListener(this.nativeSubscription)
-      this.nativeSubscription = undefined
+    if (this.listeners.size > 0 || this.keyListeners.size > 0) return
+    const hub = this.hub
+    hub.members.delete(this)
+    if (hub.members.size === 0 && hub.subscription !== undefined) {
+      this.native.removeListener(hub.subscription)
+      hub.subscription = undefined
     }
   }
 
-  private deliverChanges(): void {
-    const id = this.nativeSubscription
+  private static deliver(hub: StoreHub): void {
+    const id = hub.subscription
     if (id === undefined) return
+    const changes = hub.native.takeChanges(id)
     // Entries subscribed during this delivery have since === generation and are skipped.
-    const generation = ++this.deliveries
-    let failure: { error: unknown } | undefined
+    const generation = ++hub.deliveries
+    const failure: { error?: unknown; failed: boolean } = { failed: false }
+    for (const member of hub.members) member.dispatch(changes, generation, failure)
+    if (failure.failed) throw failure.error
+  }
+
+  private dispatch(
+    changes: (string | null)[],
+    generation: number,
+    failure: { error?: unknown; failed: boolean }
+  ): void {
     const notify = (entry: ListenerEntry, key: string | null) => {
       if (entry.since >= generation) return
       try {
         entry.listener(key)
       } catch (error) {
-        failure ??= { error }
+        if (!failure.failed) Object.assign(failure, { error, failed: true })
       }
     }
-    for (const changed of this.native.takeChanges(id)) {
+    let cleared = false
+    let touched: Set<string> | undefined
+    for (const changed of changes) {
       const key = this.toLocalChangedKey(changed)
       if (key === undefined) continue
       for (const entry of this.listeners) notify(entry, key)
-      if (key === null) {
-        for (const entries of this.keyListeners.values()) {
-          for (const entry of entries) notify(entry, null)
-        }
-      } else {
+      if (key === null) cleared = true
+      else if (this.keyListeners.has(key)) (touched ??= new Set()).add(key)
+    }
+    // Key listeners re-read the value, so one call per key per delivery is enough.
+    if (cleared) {
+      for (const entries of this.keyListeners.values()) {
+        for (const entry of entries) notify(entry, null)
+      }
+    } else if (touched !== undefined) {
+      for (const key of touched) {
         const entries = this.keyListeners.get(key)
         if (entries !== undefined) for (const entry of entries) notify(entry, key)
       }
     }
-    if (failure !== undefined) throw failure.error
   }
 
   /**
@@ -446,9 +476,16 @@ export class KV {
     return result
   }
 
+  /** Views are cached per prefix, so a namespace created during render keeps its identity. */
   namespace(prefix: string): KV {
     const normalized = prefix.endsWith(':') ? prefix : `${prefix}:`
-    return new KV(this.native, this.fullKey(normalized), false)
+    const fullPrefix = this.fullKey(normalized)
+    let view = this.hub.views.get(fullPrefix)
+    if (view === undefined) {
+      view = new KV(this.native, fullPrefix, false, undefined, this.hub)
+      this.hub.views.set(fullPrefix, view)
+    }
+    return view
   }
 
   getKeysByPrefix(prefix: string): string[] {
@@ -633,12 +670,12 @@ export class KV {
     if (!this.ownsNative) {
       throw new Error('Cannot close a KV namespace; close its root KV instance')
     }
-    if (this.closed) return
+    if (this.hub.closed) return
     this.detach()
     try {
       this.native.close()
     } finally {
-      this.closed = true
+      this.hub.closed = true
       const fallback = defaultInstance
       if (fallback === this) {
         defaultInstance = undefined
@@ -650,25 +687,30 @@ export class KV {
   }
 
   get [INTERNAL_IS_CLOSED](): boolean {
-    return this.closed
+    return this.hub.closed
   }
 
   private detach(): ListenerEntry[] {
-    if (this.nativeSubscription !== undefined) {
-      this.native.removeListener(this.nativeSubscription)
-      this.nativeSubscription = undefined
+    const hub = this.hub
+    if (hub.subscription !== undefined) {
+      this.native.removeListener(hub.subscription)
+      hub.subscription = undefined
     }
-    const entries = [...this.listeners]
-    for (const keyed of this.keyListeners.values()) entries.push(...keyed)
-    this.listeners.clear()
-    this.keyListeners.clear()
+    const entries: ListenerEntry[] = []
+    for (const member of hub.members) {
+      entries.push(...member.listeners)
+      for (const keyed of member.keyListeners.values()) entries.push(...keyed)
+      member.listeners.clear()
+      member.keyListeners.clear()
+    }
+    hub.members.clear()
     return entries
   }
 
   // Closed through another handle; subscribers must re-resolve the default.
   private abandon(): void {
     const entries = this.detach()
-    this.closed = true
+    this.hub.closed = true
     queueMicrotask(() => {
       let failure: { error: unknown } | undefined
       for (const entry of entries) {
@@ -734,7 +776,10 @@ export class KV {
   async clearAllAsync(): Promise<void> {
     if (this.keyPrefix !== '') {
       const keys = await this.getFullKeysByPrefixAsync('')
-      await Promise.all(keys.map((key) => this.native.removeAsync(key)))
+      if (keys.length === 0) return
+      this.native.applyBatch(
+        encodeBatch(keys.map((key): EncodedOp => ({ del: true, key })))
+      )
       return
     }
     return this.native.clearAllAsync()

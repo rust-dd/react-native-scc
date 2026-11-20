@@ -188,7 +188,7 @@ kv.getKeysByPrefix('user:123:')      // full keys
 kv.deleteByPrefix('cache:')
 ```
 
-Namespaces are lightweight JS views over the same underlying store. They do not create extra files or WAL threads.
+Namespaces are lightweight JS views over the same underlying store. They do not create extra files or WAL threads, they share the root's native change listener, and `namespace()` returns the same view object for the same prefix, so creating one during render is safe. `getKeysByPrefix` on a view returns keys relative to that view. Closing the root closes its views.
 
 ### Hooks
 
@@ -229,7 +229,7 @@ const sub = kv.addOnValueChangedListener((key) => {
 sub.remove()
 ```
 
-`addOnKeyChangedListener` fires only for one key (and for `clearAll`). Key listeners are indexed, so a write only reaches the listeners of its own key; hooks, `observeJSON`, and the jotai adapter subscribe this way:
+`addOnKeyChangedListener` fires only for one key (and for `clearAll`). Key listeners are indexed, so a write only reaches the listeners of its own key, and a burst of writes to one key reaches each of them once per delivered batch (only `null` if the batch includes a `clearAll`). Hooks, `observeJSON`, and the jotai adapter subscribe this way:
 
 ```ts
 const sub = kv.addOnKeyChangedListener('settings', () => console.log('settings changed'))

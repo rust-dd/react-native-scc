@@ -273,6 +273,7 @@ test('namespaced async key operations stay on native async paths', async () => {
         getAllKeysAsync(): Promise<string[]>
         remove(key: string): boolean
         removeAsync(key: string): Promise<boolean>
+        applyBatch(packed: ArrayBuffer): void
       }
     }
   ).native
@@ -280,6 +281,7 @@ test('namespaced async key operations stay on native async paths', async () => {
   const getAsyncSpy = jest.spyOn(native, 'getAllKeysAsync')
   const removeSyncSpy = jest.spyOn(native, 'remove')
   const removeAsyncSpy = jest.spyOn(native, 'removeAsync')
+  const batchSpy = jest.spyOn(native, 'applyBatch')
 
   await expect(namespace.getAllKeysAsync()).resolves.toEqual(['a', 'b'])
   expect(getAsyncSpy).toHaveBeenCalledTimes(1)
@@ -287,7 +289,8 @@ test('namespaced async key operations stay on native async paths', async () => {
 
   await namespace.clearAllAsync()
   expect(getAsyncSpy).toHaveBeenCalledTimes(2)
-  expect(removeAsyncSpy).toHaveBeenCalledTimes(2)
+  expect(batchSpy).toHaveBeenCalledTimes(1)
+  expect(removeAsyncSpy).not.toHaveBeenCalled()
   expect(removeSyncSpy).not.toHaveBeenCalled()
   expect(namespace.getAllKeys()).toEqual([])
   expect(kv.getString('outside')).toBe('outside')
@@ -494,6 +497,9 @@ test('key listeners fire only for their key and clearAll', async () => {
   kv.set('user:name', 'Ada')
   kv.set('user:age', 36)
   kv.set('other', true)
+  await flushMicrotasks()
+  expect(name).toEqual(['name'])
+  expect(other).toEqual(['other'])
   kv.clearAll()
   await flushMicrotasks()
   expect(name).toEqual(['name', null])
@@ -515,7 +521,7 @@ test('a throwing listener does not starve the others', async () => {
   kv.set('k', 1)
   kv.set('k', 2)
   await flushMicrotasks()
-  expect(seen).toEqual(['k', 'k'])
+  expect(seen).toEqual(['k'])
   const messages = dispatchErrors.splice(0).map((error) => (error as Error).message)
   expect(messages).toEqual(['boom'])
 })
@@ -606,4 +612,48 @@ test('namespace getKeysByPrefix returns keys relative to the view', () => {
   expect(user.getAllKeys()).toEqual(['name'])
   expect(user.deleteByPrefix('')).toBe(1)
   expect(kv.getAllKeys()).toEqual(['draft:root'])
+})
+
+test('a burst of writes to one key reaches its key listeners once', async () => {
+  const kv = createKV({ id: 'burst' })
+  const keyed: Array<string | null> = []
+  const all: Array<string | null> = []
+  kv.addOnKeyChangedListener('k', (key) => keyed.push(key))
+  kv.addOnValueChangedListener((key) => all.push(key))
+  for (let i = 0; i < 100; i++) kv.set('k', i)
+  await flushMicrotasks()
+  expect(keyed).toEqual(['k'])
+  expect(all).toHaveLength(100)
+
+  kv.set('k', 1)
+  kv.clearAll()
+  await flushMicrotasks()
+  expect(keyed).toEqual(['k', null])
+})
+
+test('namespace views share one native listener and are cached', async () => {
+  const kv = createKV({ id: 'shared-hub' })
+  const native = (kv as unknown as { native: { addListener(f: () => void): number } }).native
+  const addSpy = jest.spyOn(native, 'addListener')
+  const user = kv.namespace('user')
+  expect(kv.namespace('user:')).toBe(user)
+  expect(kv.namespace('user').namespace('a')).toBe(kv.namespace('user:a'))
+
+  const seen: Array<string | null> = []
+  kv.addOnValueChangedListener(() => {})
+  user.addOnKeyChangedListener('name', (key) => seen.push(key))
+  kv.namespace('other').addOnValueChangedListener(() => {})
+  expect(addSpy).toHaveBeenCalledTimes(1)
+
+  kv.set('user:name', 'Ada')
+  await flushMicrotasks()
+  expect(seen).toEqual(['name'])
+})
+
+test('closing the root closes its namespace views', () => {
+  const kv = createKV({ id: 'hub-close' })
+  const user = kv.namespace('user')
+  user.addOnValueChangedListener(() => {})
+  kv.close()
+  expect(() => user.addOnValueChangedListener(() => {})).toThrow(/closed/)
 })

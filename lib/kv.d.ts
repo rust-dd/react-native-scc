@@ -18,6 +18,30 @@ export interface KVTransaction {
     contains(key: string): boolean;
     delete(key: string): void;
 }
+interface NativeCalls {
+    getString(key: string): string | undefined;
+    getNumber(key: string): number | undefined;
+    getBoolean(key: string): boolean | undefined;
+    getJson(key: string): string | undefined;
+    contains(key: string): boolean;
+    remove(key: string): boolean;
+    setString(key: string, value: string): void;
+    setNumber(key: string, value: number): void;
+    setBoolean(key: string, value: boolean): void;
+    getManyString(keys: string[]): (string | null | undefined)[];
+    setManyString(keys: string[], values: string[]): void;
+}
+/** State a root store shares with its namespace views: one native listener, one fast path. */
+declare class StoreHub {
+    readonly native: SccKvInstance;
+    readonly calls: NativeCalls;
+    readonly members: Set<KV>;
+    readonly views: Map<string, KV>;
+    subscription: number | undefined;
+    deliveries: number;
+    closed: boolean;
+    constructor(native: SccKvInstance, calls: NativeCalls);
+}
 export declare class KV {
     private readonly ownsNative;
     private readonly storeKey?;
@@ -25,11 +49,9 @@ export declare class KV {
     private readonly calls;
     private readonly listeners;
     private readonly keyListeners;
-    private nativeSubscription;
-    private deliveries;
+    private readonly hub;
     private readonly keyPrefix;
-    private closed;
-    constructor(native: SccKvInstance, keyPrefix?: string, ownsNative?: boolean, storeKey?: string | undefined);
+    constructor(native: SccKvInstance, keyPrefix?: string, ownsNative?: boolean, storeKey?: string | undefined, hub?: StoreHub);
     /**
      * Fires after every mutation of the underlying store — including writes
      * made through other KV objects opened with the same id. `key` is null
@@ -42,7 +64,8 @@ export declare class KV {
     private subscribe;
     private keyEntries;
     private unsubscribe;
-    private deliverChanges;
+    private static deliver;
+    private dispatch;
     /**
      * Stages reads and writes through `tx`, then commits every staged write as one
      * crash-atomic native batch (one WAL record — all of it survives a crash, or
@@ -52,6 +75,7 @@ export declare class KV {
      * no listener fires and the in-process view may be ahead of a restart.
      */
     transaction<T>(callback: (tx: KVTransaction) => T): T;
+    /** Views are cached per prefix, so a namespace created during render keeps its identity. */
     namespace(prefix: string): KV;
     getKeysByPrefix(prefix: string): string[];
     private fullKeysByPrefix;
@@ -108,3 +132,4 @@ export declare function createKV(options?: KVOptions): KV;
 /** Sets the options hooks and adapters without an explicit `kv` open their store with. */
 export declare function configureDefaultKV(options: KVOptions): void;
 export declare function getDefaultKV(): KV;
+export {};
