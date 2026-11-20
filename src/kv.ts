@@ -452,13 +452,19 @@ export class KV {
   }
 
   getKeysByPrefix(prefix: string): string[] {
+    const keys = this.fullKeysByPrefix(prefix)
+    if (this.keyPrefix === '') return keys
+    return keys.map((key) => key.slice(this.keyPrefix.length))
+  }
+
+  private fullKeysByPrefix(prefix: string): string[] {
     const fullPrefix = this.fullKey(prefix)
     return this.native.getAllKeys().filter((key) => key.startsWith(fullPrefix))
   }
 
   /** Deletes the matching snapshot as one native crash-atomic WAL batch. */
   deleteByPrefix(prefix: string): number {
-    const keys = this.getKeysByPrefix(prefix)
+    const keys = this.fullKeysByPrefix(prefix)
     if (keys.length === 0) return 0
     this.native.applyBatch(
       encodeBatch(keys.map((key): EncodedOp => ({ del: true, key })))
@@ -583,7 +589,7 @@ export class KV {
 
   getAllKeys(): string[] {
     if (this.keyPrefix === '') return this.native.getAllKeys()
-    return this.getKeysByPrefix('').map((key) => key.slice(this.keyPrefix.length))
+    return this.getKeysByPrefix('')
   }
 
   clearAll(): number {
@@ -797,6 +803,9 @@ export function createKV(options: KVOptions = {}): KV {
       true,
       `mem\0${id}`
     )
+  }
+  if (options.encryptionKey === '') {
+    throw new TypeError('encryptionKey must not be empty')
   }
   const dir = options.path ?? getBaseDirectory()
   const strict = options.durability === 'strict'

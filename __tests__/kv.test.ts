@@ -588,3 +588,22 @@ test('a listener added during delivery skips changes made before it subscribed',
   await flushMicrotasks()
   expect(late).toEqual(['c'])
 })
+
+test('an empty encryption key is rejected instead of opening an unencrypted store', () => {
+  expect(() => createKV({ id: 'vault', encryptionKey: '' })).toThrow(TypeError)
+})
+
+test('namespace getKeysByPrefix returns keys relative to the view', () => {
+  const kv = createKV({ id: 'ns-prefix' })
+  const user = kv.namespace('user:123')
+  user.set('draft:1', 'a')
+  user.set('draft:2', 'b')
+  user.set('name', 'c')
+  kv.set('draft:root', 'd')
+
+  expect(user.getKeysByPrefix('draft:').sort()).toEqual(['draft:1', 'draft:2'])
+  for (const key of user.getKeysByPrefix('draft:')) user.delete(key)
+  expect(user.getAllKeys()).toEqual(['name'])
+  expect(user.deleteByPrefix('')).toBe(1)
+  expect(kv.getAllKeys()).toEqual(['draft:root'])
+})

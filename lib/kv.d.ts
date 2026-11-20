@@ -54,6 +54,7 @@ export declare class KV {
     transaction<T>(callback: (tx: KVTransaction) => T): T;
     namespace(prefix: string): KV;
     getKeysByPrefix(prefix: string): string[];
+    private fullKeysByPrefix;
     /** Deletes the matching snapshot as one native crash-atomic WAL batch. */
     deleteByPrefix(prefix: string): number;
     observeJSON<T = unknown, S = T | undefined>(key: string, selector: (value: T | undefined) => S, listener: (selected: S) => void, equals?: (a: S, b: S) => boolean): KVSubscription;
