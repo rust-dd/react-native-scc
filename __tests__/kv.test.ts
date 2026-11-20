@@ -4,7 +4,7 @@ jest.mock(
 )
 
 import { dispatchErrors, resetStores } from './mockNitro'
-import { createKV, getDefaultKV } from '../src/kv'
+import { configureDefaultKV, createKV, getDefaultKV } from '../src/kv'
 
 const flushMicrotasks = () =>
   new Promise<void>((resolve) => setTimeout(resolve, 0))
@@ -456,6 +456,20 @@ test('closing the default store through another handle hands out a live default'
   stale.close()
   expect(getDefaultKV()).toBe(fresh)
   fresh.close()
+})
+
+test('configureDefaultKV sets the options the default store opens with', () => {
+  configureDefaultKV({ id: 'configured-default' })
+  try {
+    const kv = getDefaultKV()
+    kv.set('a', '1')
+    expect(createKV({ id: 'configured-default' }).getString('a')).toBe('1')
+    expect(() => configureDefaultKV({})).toThrow(/already open/)
+    expect(() => configureDefaultKV({ recreate: true })).toThrow(TypeError)
+    kv.close()
+  } finally {
+    configureDefaultKV({})
+  }
 })
 
 test('batched change events keep order and one event per write', async () => {

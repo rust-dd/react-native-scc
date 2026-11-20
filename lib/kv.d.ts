@@ -101,4 +101,6 @@ export declare class KV {
     private toLocalChangedKey;
 }
 export declare function createKV(options?: KVOptions): KV;
+/** Sets the options hooks and adapters without an explicit `kv` open their store with. */
+export declare function configureDefaultKV(options: KVOptions): void;
 export declare function getDefaultKV(): KV;

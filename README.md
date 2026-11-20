@@ -199,6 +199,12 @@ function Counter() {
 
 Each hook returns `[value, setValue]`; calling `setValue(undefined)` deletes the key. Hooks re-render on any write to the key, including writes made through other KV objects opened with the same id.
 
+Hooks and adapters called without a `kv` use the default store (`getDefaultKV()`, id `'default'`). To give it other options, such as an encryption key, call `configureDefaultKV` once before anything touches it, for example at the top of `index.js`:
+
+```ts
+configureDefaultKV({ encryptionKey: key, durability: 'strict' })
+```
+
 If the default store is closed through any handle, hooks and adapters move on to a freshly opened one.
 
 ```tsx

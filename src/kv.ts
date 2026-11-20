@@ -277,6 +277,7 @@ function nativeCalls(native: SccKvInstance): NativeCalls {
 type ListenerEntry = { listener: KVChangeListener }
 
 let defaultInstance: KV | undefined
+let defaultOptions: KVOptions = {}
 
 export class KV {
   private readonly native: SccKvInstance
@@ -791,7 +792,20 @@ export function createKV(options: KVOptions = {}): KV {
   )
 }
 
+/** Sets the options hooks and adapters without an explicit `kv` open their store with. */
+export function configureDefaultKV(options: KVOptions): void {
+  if (options.recreate !== undefined) {
+    throw new TypeError('configureDefaultKV does not accept recreate')
+  }
+  if (defaultInstance !== undefined) {
+    throw new Error(
+      'the default KV store is already open; configure it before first use'
+    )
+  }
+  defaultOptions = { ...options }
+}
+
 export function getDefaultKV(): KV {
-  defaultInstance ??= createKV()
+  defaultInstance ??= createKV(defaultOptions)
   return defaultInstance
 }
