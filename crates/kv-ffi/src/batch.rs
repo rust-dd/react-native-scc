@@ -1,34 +1,60 @@
 use kv_core::Value;
 
-pub(crate) struct PackedKeys<'a> {
+/// Splits `[u32 len LE][bytes]` fields. Validation and iteration both use it, so they always agree on boundaries.
+struct Fields<'a> {
     data: &'a [u8],
     off: usize,
+}
+
+impl<'a> Fields<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Self { data, off: 0 }
+    }
+
+    fn done(&self) -> bool {
+        self.off >= self.data.len()
+    }
+
+    fn next(&mut self, what: &str) -> Result<&'a [u8], String> {
+        let len = read_u32(self.data, &mut self.off)? as usize;
+        let end = advance(self.data, self.off, len, what)?;
+        let field = &self.data[self.off..end];
+        self.off = end;
+        Ok(field)
+    }
+
+    fn next_str(&mut self, what: &str) -> Result<&'a str, String> {
+        std::str::from_utf8(self.next(what)?).map_err(|_| format!("{what} is not valid UTF-8"))
+    }
+}
+
+fn validate_count(found: usize, expected: usize, what: &str) -> Result<(), String> {
+    if found == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "{what} count mismatch: found {found}, expected {expected}"
+        ))
+    }
+}
+
+pub(crate) struct PackedKeys<'a> {
+    fields: Fields<'a>,
     remaining: usize,
 }
 
 impl<'a> PackedKeys<'a> {
     /// Validates `count` packed `[u32 key_len][key]` entries before lookups begin.
     pub(crate) fn validate(data: &'a [u8], count: usize) -> Result<PackedKeys<'a>, String> {
-        let mut off = 0usize;
+        let mut fields = Fields::new(data);
         let mut seen = 0usize;
-        while off < data.len() {
-            let key_len = read_u32(data, &mut off)? as usize;
-            let key_end = advance(data, off, key_len, "key")?;
-            std::str::from_utf8(&data[off..key_end])
-                .map_err(|_| "key is not valid UTF-8".to_string())?;
-            off = key_end;
-            seen = seen
-                .checked_add(1)
-                .ok_or_else(|| "key count overflow".to_string())?;
+        while !fields.done() {
+            fields.next_str("key")?;
+            seen += 1;
         }
-        if seen != count {
-            return Err(format!(
-                "key count mismatch: found {seen}, expected {count}"
-            ));
-        }
+        validate_count(seen, count, "key")?;
         Ok(PackedKeys {
-            data,
-            off: 0,
+            fields: Fields::new(data),
             remaining: count,
         })
     }
@@ -41,14 +67,10 @@ impl<'a> Iterator for PackedKeys<'a> {
         if self.remaining == 0 {
             return None;
         }
-        let key_len =
-            u32::from_le_bytes(self.data[self.off..self.off + 4].try_into().unwrap()) as usize;
-        self.off += 4;
-        let key_bytes = &self.data[self.off..self.off + key_len];
-        self.off += key_len;
+        let key = self.fields.next("key").ok()?;
         self.remaining -= 1;
-        // SAFETY: `validate` checked this exact slice before constructing the iterator.
-        Some(unsafe { std::str::from_utf8_unchecked(key_bytes) })
+        // SAFETY: validate ran the same splitter over the same buffer and checked each field is UTF-8.
+        Some(unsafe { std::str::from_utf8_unchecked(key) })
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -59,38 +81,23 @@ impl<'a> Iterator for PackedKeys<'a> {
 impl ExactSizeIterator for PackedKeys<'_> {}
 
 pub(crate) struct PackedEntries<'a> {
-    data: &'a [u8],
-    off: usize,
+    fields: Fields<'a>,
     remaining: usize,
 }
 
 impl<'a> PackedEntries<'a> {
-    /// Validates the framing of `count` packed `[u32 key_len][key][u32
-    /// val_len][val]` entries so iteration can run unchecked afterwards.
+    /// Validates `count` packed `[u32 key_len][key][u32 val_len][val]` entries.
     pub(crate) fn validate(data: &'a [u8], count: usize) -> Result<PackedEntries<'a>, String> {
-        let mut off = 0usize;
+        let mut fields = Fields::new(data);
         let mut seen = 0usize;
-        while off < data.len() {
-            let klen = read_u32(data, &mut off)? as usize;
-            let key_end = advance(data, off, klen, "key")?;
-            std::str::from_utf8(&data[off..key_end])
-                .map_err(|_| "key is not valid UTF-8".to_string())?;
-            off = key_end;
-            let vlen = read_u32(data, &mut off)? as usize;
-            let value_end = advance(data, off, vlen, "value")?;
-            std::str::from_utf8(&data[off..value_end])
-                .map_err(|_| "value is not valid UTF-8".to_string())?;
-            off = value_end;
+        while !fields.done() {
+            fields.next_str("key")?;
+            fields.next_str("value")?;
             seen += 1;
         }
-        if seen != count {
-            return Err(format!(
-                "entry count mismatch: found {seen}, expected {count}"
-            ));
-        }
+        validate_count(seen, count, "entry")?;
         Ok(PackedEntries {
-            data,
-            off: 0,
+            fields: Fields::new(data),
             remaining: count,
         })
     }
@@ -100,27 +107,19 @@ impl<'a> Iterator for PackedEntries<'a> {
     type Item = (&'a str, Value);
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.off >= self.data.len() {
+        if self.remaining == 0 {
             return None;
         }
-        let klen =
-            u32::from_le_bytes(self.data[self.off..self.off + 4].try_into().unwrap()) as usize;
-        self.off += 4;
-        let key_bytes = &self.data[self.off..self.off + klen];
-        self.off += klen;
-        let vlen =
-            u32::from_le_bytes(self.data[self.off..self.off + 4].try_into().unwrap()) as usize;
-        self.off += 4;
-        let val_bytes = &self.data[self.off..self.off + vlen];
-        self.off += vlen;
-        debug_assert!(std::str::from_utf8(key_bytes).is_ok(), "key must be UTF-8");
-        debug_assert!(
-            std::str::from_utf8(val_bytes).is_ok(),
-            "value must be UTF-8"
-        );
-        let key = unsafe { std::str::from_utf8_unchecked(key_bytes) };
-        let value = unsafe { kv_core::CompactString::from_utf8_unchecked(val_bytes) };
+        let key = self.fields.next("key").ok()?;
+        let value = self.fields.next("value").ok()?;
         self.remaining -= 1;
+        // SAFETY: validate ran the same splitter over the same buffer and checked each field is UTF-8.
+        let (key, value) = unsafe {
+            (
+                std::str::from_utf8_unchecked(key),
+                kv_core::CompactString::from_utf8_unchecked(value),
+            )
+        };
         Some((key, Value::Str(value)))
     }
 
