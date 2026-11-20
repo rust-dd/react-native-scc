@@ -9,6 +9,7 @@ pub(super) fn replay_wal(
     path: &Path,
     map: &crate::ValueMap,
     cipher: Option<&Cipher>,
+    key_verified: bool,
 ) -> Result<u64> {
     let Some(mapped) = snapshot::map_file(path)? else {
         return Ok(0);
@@ -22,7 +23,7 @@ pub(super) fn replay_wal(
     snapshot::check_key_matches(path, encrypted, cipher)?;
     let mut offset = header_len;
     if let Some(cipher) = cipher {
-        let mut decrypted_any = false;
+        let mut decrypted_any = key_verified;
         while offset < data.len() {
             match cipher.decrypt_frame(&data[offset..]) {
                 FrameOutcome::Frame {

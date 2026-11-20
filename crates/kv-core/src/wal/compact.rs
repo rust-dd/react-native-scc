@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use super::writer::{Writer, take_logged};
-use crate::crypto;
 use crate::snapshot;
 
 impl Writer {
@@ -41,15 +40,21 @@ impl Writer {
         if self.crash_after_snapshot() {
             return;
         }
-        let header = crypto::header_bytes(self.cfg.cipher.is_some());
+        let prefix = match super::fresh_prefix(self.cfg.cipher.as_deref()) {
+            Ok(prefix) => prefix,
+            Err(e) => {
+                self.fail(e.to_string());
+                return;
+            }
+        };
         let truncated = self
             .file
             .set_len(0)
-            .and_then(|()| self.file.write_all(&header))
+            .and_then(|()| self.file.write_all(&prefix))
             .and_then(|()| self.file.sync_all());
         match truncated {
             Ok(()) => {
-                self.wal_len = header.len() as u64;
+                self.wal_len = prefix.len() as u64;
                 self.dirty = false;
                 self.last_sync = Instant::now();
             }

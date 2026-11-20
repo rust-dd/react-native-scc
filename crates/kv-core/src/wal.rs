@@ -52,6 +52,15 @@ pub(crate) struct Log {
     closed: bool,
 }
 
+/// The empty frame proves the key on replay, so a corrupt first record frame is truncated, not a key error.
+pub(crate) fn fresh_prefix(cipher: Option<&Cipher>) -> Result<Vec<u8>> {
+    let mut prefix = crypto::header_bytes(cipher.is_some()).to_vec();
+    if let Some(cipher) = cipher {
+        cipher.encrypt_frame(&[], &mut prefix)?;
+    }
+    Ok(prefix)
+}
+
 impl Log {
     pub(crate) fn append(&mut self, op: &Op) {
         record::encode_unsealed(op, &mut self.bytes);
@@ -101,12 +110,12 @@ impl WalHandle {
             })?;
         let mut wal_len = wal_len;
         if wal_len == 0 {
-            let header = crypto::header_bytes(cfg.cipher.is_some());
-            file.write_all(&header).map_err(|e| Error::Io {
+            let prefix = fresh_prefix(cfg.cipher.as_deref())?;
+            file.write_all(&prefix).map_err(|e| Error::Io {
                 path: cfg.wal_path.clone(),
                 source: e,
             })?;
-            wal_len = header.len() as u64;
+            wal_len = prefix.len() as u64;
         }
         let shared = Arc::new(Shared {
             log: Mutex::new(Log::default()),

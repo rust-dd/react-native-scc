@@ -160,7 +160,8 @@ impl Store {
         )?));
         let compact_gate = Arc::new(RwLock::new(()));
         let snap_len = snapshot::load(&snap_path, &map, cipher.as_deref())?;
-        let wal_len = replay_wal(&wal_path, &map, cipher.as_deref())?;
+        let snapshot_verified_key = snap_len > crate::crypto::HEADER_LEN as u64;
+        let wal_len = replay_wal(&wal_path, &map, cipher.as_deref(), snapshot_verified_key)?;
         let wal = WalHandle::spawn(
             WriterConfig {
                 wal_path,

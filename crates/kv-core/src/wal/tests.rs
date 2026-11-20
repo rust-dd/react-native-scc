@@ -161,7 +161,7 @@ fn encrypted_pending_records_split_at_the_frame_limit_and_recover() {
             frames += 1;
         }
         assert_eq!(offset, data.len());
-        assert_eq!(frames, 2);
+        assert_eq!(frames, 3);
     }
 
     store.close().unwrap();

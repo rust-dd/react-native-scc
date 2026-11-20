@@ -254,3 +254,58 @@ fn set_str_overwrites_any_value_and_clears_ttl() {
     assert_eq!(reopened.get("s"), Some(Value::Str("ünnepi".into())));
     reopened.close().unwrap();
 }
+
+fn encrypted_opts(passphrase: &[u8]) -> OpenOptions {
+    OpenOptions {
+        encryption_key: Some(crate::derive_encryption_key(passphrase)),
+        ..fast_opts()
+    }
+}
+
+#[test]
+fn corrupt_first_wal_frame_after_an_authenticated_snapshot_is_truncated() {
+    let dir = tempfile::tempdir().unwrap();
+    let cipher = Cipher::new(&crate::derive_encryption_key(b"key"));
+    let map = crate::new_value_map();
+    let _ = map.insert_sync("k".into(), crate::slot(Value::Num(1.0)));
+    snapshot::persist(
+        &dir.path().join("db.snap"),
+        snapshot::capture(&map),
+        Some(&cipher),
+    )
+    .unwrap();
+    let wal_path = dir.path().join("db.wal");
+    let mut wal = crate::crypto::header_bytes(true).to_vec();
+    wal.extend_from_slice(&20u32.to_le_bytes());
+    wal.extend_from_slice(&[0xab; 12 + 20]);
+    std::fs::write(&wal_path, &wal).unwrap();
+
+    let s = Store::open(dir.path(), "db", encrypted_opts(b"key")).unwrap();
+    assert_eq!(s.get("k"), Some(Value::Num(1.0)));
+    s.close().unwrap();
+    assert_eq!(
+        std::fs::metadata(&wal_path).unwrap().len(),
+        crate::crypto::HEADER_LEN as u64
+    );
+}
+
+#[test]
+fn fresh_encrypted_wal_survives_a_corrupt_first_record_frame() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(dir.path(), "db", encrypted_opts(b"key")).unwrap();
+    s.set("k", Value::Num(1.0)).unwrap();
+    s.flush().unwrap();
+    s.close().unwrap();
+    let wal_path = dir.path().join("db.wal");
+    let mut data = std::fs::read(&wal_path).unwrap();
+    *data.last_mut().unwrap() ^= 0xff;
+    std::fs::write(&wal_path, &data).unwrap();
+
+    let s = Store::open(dir.path(), "db", encrypted_opts(b"key")).unwrap();
+    assert_eq!(s.get("k"), None);
+    s.close().unwrap();
+    assert!(matches!(
+        Store::open(dir.path(), "db", encrypted_opts(b"wrong")),
+        Err(Error::Crypto(_))
+    ));
+}
