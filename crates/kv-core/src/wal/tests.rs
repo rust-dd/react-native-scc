@@ -380,3 +380,28 @@ fn writes_admitted_during_capture_survive_both_compaction_crash_points() {
         recovered.close().unwrap();
     }
 }
+
+#[test]
+fn strict_compaction_fsyncs_outside_the_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    let opts = crate::OpenOptions {
+        durability: crate::Durability::Strict,
+        compact_min: u64::MAX,
+        ..crate::OpenOptions::default()
+    };
+    let store = crate::Store::open(dir.path(), "strict", opts).unwrap();
+    store.set("a", Value::Num(0.0)).unwrap();
+    store.flush().unwrap();
+    let wal = store.wal_for_test().unwrap();
+    wal.hooks().hold_writes.store(true, Ordering::Release);
+    store.set("b", Value::Num(1.0)).unwrap();
+    wal.hooks().compact_now.store(true, Ordering::Release);
+    wal.wake();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while wal.hooks().compactions.load(Ordering::Acquire) == 0 {
+        assert!(Instant::now() < deadline, "compaction never ran");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(wal.hooks().gated_syncs.load(Ordering::Acquire), 0);
+    store.close().unwrap();
+}

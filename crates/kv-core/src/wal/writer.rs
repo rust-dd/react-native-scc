@@ -97,8 +97,15 @@ impl Writer {
     }
 
     pub(super) fn write_pending(&mut self) {
+        if self.append_pending() && self.cfg.durability == Durability::Strict {
+            self.sync();
+        }
+    }
+
+    /// Writes without the strict fsync, for callers holding the compaction gate.
+    pub(super) fn append_pending(&mut self) -> bool {
         if self.pending.is_empty() {
-            return;
+            return false;
         }
         record::seal(&mut self.pending);
         let result = match &self.cfg.cipher {
@@ -123,17 +130,22 @@ impl Writer {
             Ok(written) => {
                 self.wal_len += written;
                 self.dirty = true;
-                if self.cfg.durability == Durability::Strict {
-                    self.sync();
-                }
+                true
             }
-            Err(error) => self.fail(error.to_string()),
+            Err(error) => {
+                self.fail(error.to_string());
+                false
+            }
         }
     }
 
     pub(super) fn sync(&mut self) {
         if !self.dirty {
             return;
+        }
+        #[cfg(test)]
+        if self.cfg.compact_gate.try_read().is_err() {
+            self.shared.hooks.gated_syncs.fetch_add(1, Ordering::AcqRel);
         }
         if let Err(e) = self.file.sync_data() {
             self.fail(e.to_string());

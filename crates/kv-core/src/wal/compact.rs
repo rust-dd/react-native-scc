@@ -21,7 +21,7 @@ impl Writer {
             let mut log = self.shared.log.lock().unwrap();
             take_logged(&mut log, &mut self.pending);
             drop(log);
-            self.write_pending();
+            self.append_pending();
             let records = snapshot::capture(&self.map);
             self.after_capture();
             // Writes admitted during capture may be in the snapshot out of order, so both WALs replay them.
@@ -31,7 +31,7 @@ impl Writer {
         };
         record::seal(&mut tail);
         self.pending.extend_from_slice(&tail);
-        self.write_pending();
+        self.append_pending();
         // Losing an unsynced WAL tail to power loss after the rename would replay a stale log.
         self.sync();
         if self
