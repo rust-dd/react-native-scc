@@ -625,14 +625,17 @@ export class KV {
     }
     if (this.closed) return
     this.detach()
-    this.native.close()
-    this.closed = true
-    const fallback = defaultInstance
-    if (fallback === this) {
-      defaultInstance = undefined
-    } else if (fallback !== undefined && fallback.storeKey === this.storeKey) {
-      defaultInstance = undefined
-      fallback.abandon()
+    try {
+      this.native.close()
+    } finally {
+      this.closed = true
+      const fallback = defaultInstance
+      if (fallback === this) {
+        defaultInstance = undefined
+      } else if (fallback !== undefined && fallback.storeKey === this.storeKey) {
+        defaultInstance = undefined
+        fallback.abandon()
+      }
     }
   }
 

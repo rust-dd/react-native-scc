@@ -309,3 +309,13 @@ fn fresh_encrypted_wal_survives_a_corrupt_first_record_frame() {
         Err(Error::Crypto(_))
     ));
 }
+
+#[test]
+fn close_reports_a_background_write_failure_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(dir.path(), "db", fast_opts()).unwrap();
+    s.set("k", Value::Num(1.0)).unwrap();
+    s.wal_for_test().unwrap().inject_error("disk full");
+    assert!(matches!(s.close(), Err(Error::Background(_))));
+    assert!(s.close().is_ok());
+}

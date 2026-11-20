@@ -534,3 +534,16 @@ test('non-ArrayBuffer objects are rejected before reaching native', async () => 
   kv.set('k', view.buffer)
   expect(new Uint8Array(kv.getBuffer('k')!)).toEqual(view)
 })
+
+test('a failing native close still closes the handle and releases the default', () => {
+  const kv = getDefaultKV()
+  const native = (kv as unknown as { native: { close: () => void } }).native
+  native.close = () => {
+    throw new Error('close: background write failed')
+  }
+  expect(() => kv.close()).toThrow(/background write failed/)
+  expect(() => kv.addOnValueChangedListener(() => {})).toThrow(/closed/)
+  expect(() => kv.close()).not.toThrow()
+  expect(getDefaultKV()).not.toBe(kv)
+  getDefaultKV().close()
+})

@@ -300,11 +300,12 @@ impl Store {
     pub fn close(&self) -> Result<()> {
         let _close = self.close_gate.lock().unwrap();
         if let Some(wal) = &self.wal {
-            if wal.close() {
+            let first = wal.close();
+            if first {
                 self.closed.store(true, Ordering::Release);
             }
             wal.join();
-            return Ok(());
+            return if first { wal.check() } else { Ok(()) };
         }
         if let Some(gate) = &self.mutation_gate {
             let _mutation = gate.lock().unwrap();
