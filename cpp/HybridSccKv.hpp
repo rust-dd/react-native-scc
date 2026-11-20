@@ -42,12 +42,13 @@ public:
   }
 
   std::shared_ptr<HybridSccKvInstanceSpec> inMemory(const std::string& id,
+                                                    bool recreate,
                                                     std::optional<double> maxEntries,
                                                     std::optional<double> ttlSweepIntervalMs) override {
     size_t maxEntriesValue = optionalPositiveInteger<size_t>(maxEntries, "maxEntries");
     uint64_t sweepValue =
         optionalPositiveInteger<uint64_t>(ttlSweepIntervalMs, "ttlSweepIntervalMs");
-    SccKvStore* handle = scc_kv_in_memory(id.c_str(), maxEntriesValue, sweepValue);
+    SccKvStore* handle = scc_kv_in_memory(id.c_str(), recreate, maxEntriesValue, sweepValue);
     if (handle == nullptr) common::throwLastError("inMemory");
     return std::make_shared<HybridSccKvInstance>(handle);
   }

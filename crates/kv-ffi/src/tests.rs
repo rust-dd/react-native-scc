@@ -106,7 +106,7 @@ fn round_trips_all_tags_and_persists() {
 #[test]
 fn keys_packing_decodes() {
     let id = c("keys-test");
-    let h = unsafe { scc_kv_in_memory(id.as_ptr(), 0, 0) };
+    let h = unsafe { scc_kv_in_memory(id.as_ptr(), false, 0, 0) };
     for k in ["alpha", "b", "gamma_gamma"] {
         assert_eq!(set(h, k, 0, b"x"), 0);
     }
@@ -165,7 +165,7 @@ fn errors_are_reported() {
     assert!(last_error().unwrap().contains("handle is null"));
 
     let id = c("err-test");
-    let h = unsafe { scc_kv_in_memory(id.as_ptr(), 0, 0) };
+    let h = unsafe { scc_kv_in_memory(id.as_ptr(), false, 0, 0) };
     assert_eq!(set(h, "k", 1, b"xx"), -1);
     assert!(last_error().unwrap().contains("invalid value for tag 1"));
     assert_eq!(set(h, "k", 9, &[]), -1);
@@ -181,7 +181,7 @@ fn errors_are_reported() {
 #[test]
 fn invalid_utf8_is_rejected_on_fast_paths() {
     let id = c("utf8-errors");
-    let h = unsafe { scc_kv_in_memory(id.as_ptr(), 0, 0) };
+    let h = unsafe { scc_kv_in_memory(id.as_ptr(), false, 0, 0) };
     let invalid = [0xff];
 
     assert_eq!(unsafe { scc_kv_set_f64(h, invalid.as_ptr(), 1, 1.0) }, -1);
@@ -225,7 +225,7 @@ fn invalid_utf8_is_rejected_on_fast_paths() {
 #[test]
 fn empty_string_value_round_trips() {
     let id = c("empty-test");
-    let h = unsafe { scc_kv_in_memory(id.as_ptr(), 0, 0) };
+    let h = unsafe { scc_kv_in_memory(id.as_ptr(), false, 0, 0) };
     assert_eq!(set(h, "empty", 0, &[]), 0);
     assert_eq!(get_owned(h, "empty"), Some((0, Vec::new())));
     let mut len = usize::MAX;
@@ -241,7 +241,7 @@ fn empty_string_value_round_trips() {
 #[test]
 fn fast_paths_round_trip() {
     let id = c("fast-test");
-    let h = unsafe { scc_kv_in_memory(id.as_ptr(), 0, 0) };
+    let h = unsafe { scc_kv_in_memory(id.as_ptr(), false, 0, 0) };
 
     assert_eq!(
         unsafe { scc_kv_set_str(h, "s".as_ptr(), 1, b"hello".as_ptr(), 5) },
@@ -412,7 +412,7 @@ fn stale_handle_close_keeps_reopened_store_usable() {
 #[test]
 fn prefix_calls_scope_keys_and_clear_reports_its_count() {
     let id = c("prefix-ffi");
-    let h = unsafe { scc_kv_in_memory(id.as_ptr(), 0, 0) };
+    let h = unsafe { scc_kv_in_memory(id.as_ptr(), false, 0, 0) };
     for k in ["user:a", "user:b", "other"] {
         assert_eq!(set(h, k, 0, b"x"), 0);
     }

@@ -169,7 +169,7 @@ fn eviction_keeps_live_keys_when_many_expire_at_once() {
 #[test]
 fn in_memory_accepts_eviction_options() {
     let id = c("evict-mem");
-    let h = unsafe { scc_kv_in_memory(id.as_ptr(), 2, 20) };
+    let h = unsafe { scc_kv_in_memory(id.as_ptr(), false, 2, 20) };
     assert!(!h.is_null(), "{:?}", last_error());
 
     for i in 0..6 {

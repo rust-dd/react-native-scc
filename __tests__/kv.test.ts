@@ -4,7 +4,7 @@ jest.mock(
 )
 
 import { dispatchErrors, resetStores } from './mockNitro'
-import { configureDefaultKV, createKV, getDefaultKV } from '../src/kv'
+import { configureDefaultKV, createKV, getDefaultKV, type KVTransaction } from '../src/kv'
 
 const flushMicrotasks = () =>
   new Promise<void>((resolve) => setTimeout(resolve, 0))
@@ -650,4 +650,43 @@ test('closing the root closes its namespace views', () => {
   user.addOnValueChangedListener(() => {})
   kv.close()
   expect(() => user.addOnValueChangedListener(() => {})).toThrow(/closed/)
+})
+
+test('the TextEncoder-less fallback encodes a lone surrogate as U+FFFD', () => {
+  const original = globalThis.TextEncoder
+  Reflect.deleteProperty(globalThis, 'TextEncoder')
+  try {
+    jest.isolateModules(() => {
+      const { createKV: create } = require('../src/kv') as typeof import('../src/kv')
+      const kv = create({ id: 'no-text-encoder' })
+      const native = (kv as unknown as { native: { applyBatch(p: ArrayBuffer): void } }).native
+      const spy = jest.spyOn(native, 'applyBatch')
+      kv.transaction((tx) => tx.set('bio', 'a\uD83D'))
+      const packed = new Uint8Array(spy.mock.calls[0]![0])
+      expect([...packed.slice(-4)]).toEqual([0x61, 0xef, 0xbf, 0xbd])
+    })
+  } finally {
+    globalThis.TextEncoder = original
+  }
+})
+
+test('a transaction context cannot be used after its commit', () => {
+  const kv = createKV({ id: 'tx-after-commit' })
+  let leaked: KVTransaction | undefined
+  kv.transaction((tx) => {
+    leaked = tx
+  })
+  expect(() => leaked!.set('k', 1)).toThrow(/committed/)
+  expect(() => leaked!.getString('k')).toThrow(/committed/)
+})
+
+test('recreate on a live in-memory store throws like the disk store', () => {
+  const live = createKV({ id: 'mem-recreate', persistence: 'none' })
+  live.set('k', 'v')
+  expect(() =>
+    createKV({ id: 'mem-recreate', persistence: 'none', recreate: true })
+  ).toThrow(/already open/)
+  live.close()
+  const fresh = createKV({ id: 'mem-recreate', persistence: 'none', recreate: true })
+  expect(fresh.getString('k')).toBeUndefined()
 })

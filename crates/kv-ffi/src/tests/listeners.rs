@@ -18,7 +18,7 @@ fn listener_receives_set_delete_clear_and_batch() {
     let events = Arc::<Mutex<Vec<Option<String>>>>::new(Mutex::new(Vec::new()));
 
     let id_c = c("listener-test");
-    let h = unsafe { scc_kv_in_memory(id_c.as_ptr(), 0, 0) };
+    let h = unsafe { scc_kv_in_memory(id_c.as_ptr(), false, 0, 0) };
     let user_data = Arc::as_ptr(&events) as *mut std::ffi::c_void;
     let sub = unsafe { scc_kv_subscribe(h, on_change, user_data) };
     assert!(sub > 0);

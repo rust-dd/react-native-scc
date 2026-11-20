@@ -24,7 +24,7 @@ fn get_many_raw(
 #[test]
 fn packed_multi_get_preserves_order_duplicates_and_optional_strings() {
     let id = c("multi-get-semantics");
-    let h = unsafe { scc_kv_in_memory(id.as_ptr(), 0, 0) };
+    let h = unsafe { scc_kv_in_memory(id.as_ptr(), false, 0, 0) };
     assert_eq!(set(h, "alpha", 0, b"one"), 0);
     assert_eq!(set(h, "", 0, b"root"), 0);
     assert_eq!(set(h, "empty", 0, b""), 0);
@@ -81,7 +81,7 @@ fn packed_multi_get_preserves_order_duplicates_and_optional_strings() {
 #[test]
 fn packed_multi_get_accepts_empty_input() {
     let id = c("multi-get-empty");
-    let h = unsafe { scc_kv_in_memory(id.as_ptr(), 0, 0) };
+    let h = unsafe { scc_kv_in_memory(id.as_ptr(), false, 0, 0) };
     let (status, data, len) = get_many_raw(h, std::ptr::null(), 0, 0);
     assert_eq!(status, 0, "{:?}", last_error());
     assert!(data.is_null());
@@ -93,7 +93,7 @@ fn packed_multi_get_accepts_empty_input() {
 #[test]
 fn packed_multi_get_rejects_malformed_inputs_without_publishing_output() {
     let id = c("multi-get-malformed");
-    let h = unsafe { scc_kv_in_memory(id.as_ptr(), 0, 0) };
+    let h = unsafe { scc_kv_in_memory(id.as_ptr(), false, 0, 0) };
     let one_key = pack_keys(&[b"key"]);
     let invalid_utf8 = pack_keys(&[&[0xff]]);
     let cases = [
@@ -124,7 +124,7 @@ fn packed_multi_get_rejects_malformed_inputs_without_publishing_output() {
 #[test]
 fn packed_multi_get_rejects_null_handle_and_output_pointers() {
     let id = c("multi-get-pointers");
-    let h = unsafe { scc_kv_in_memory(id.as_ptr(), 0, 0) };
+    let h = unsafe { scc_kv_in_memory(id.as_ptr(), false, 0, 0) };
     let packed = pack_keys(&[b"key"]);
     let mut data = std::ptr::null_mut();
     let mut len = 0usize;

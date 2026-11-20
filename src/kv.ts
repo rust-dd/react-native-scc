@@ -95,8 +95,9 @@ function utf8Encode(value: string): Uint8Array {
   if (textEncoder !== undefined) return textEncoder.encode(value)
   const out: number[] = []
   for (let i = 0; i < value.length; i++) {
-    const cp = value.codePointAt(i)!
+    let cp = value.codePointAt(i)!
     if (cp > 0xffff) i++
+    else if (cp >= 0xd800 && cp <= 0xdfff) cp = 0xfffd
     if (cp < 0x80) out.push(cp)
     else if (cp < 0x800) out.push(0xc0 | (cp >> 6), 0x80 | (cp & 0x3f))
     else if (cp < 0x10000)
@@ -186,10 +187,16 @@ export interface KVTransaction {
 
 class TransactionContext implements KVTransaction {
   private readonly writes = new Map<string, PendingWrite>()
+  private committed = false
 
   constructor(private readonly store: KV) {}
 
+  private assertOpen(): void {
+    if (this.committed) throw new Error('transaction already committed')
+  }
+
   set(key: string, value: KVValue): void {
+    this.assertOpen()
     // Copy staged buffers: kv.set marshals at call time, so later caller-side
     // mutation must not leak into the commit here either.
     const primitive =
@@ -203,10 +210,12 @@ class TransactionContext implements KVTransaction {
   }
 
   setJSON(key: string, value: unknown): void {
+    this.assertOpen()
     this.writes.set(key, { kind: 'json', json: serializeJSON(value) })
   }
 
   getString(key: string): string | undefined {
+    this.assertOpen()
     const write = this.writes.get(key)
     if (write !== undefined) {
       return write.kind === 'value' && typeof write.value === 'string'
@@ -217,6 +226,7 @@ class TransactionContext implements KVTransaction {
   }
 
   getNumber(key: string): number | undefined {
+    this.assertOpen()
     const write = this.writes.get(key)
     if (write !== undefined) {
       return write.kind === 'value' && typeof write.value === 'number'
@@ -227,6 +237,7 @@ class TransactionContext implements KVTransaction {
   }
 
   getBoolean(key: string): boolean | undefined {
+    this.assertOpen()
     const write = this.writes.get(key)
     if (write !== undefined) {
       return write.kind === 'value' && typeof write.value === 'boolean'
@@ -237,6 +248,7 @@ class TransactionContext implements KVTransaction {
   }
 
   getBuffer(key: string): ArrayBuffer | undefined {
+    this.assertOpen()
     const write = this.writes.get(key)
     if (write !== undefined) {
       return write.kind === 'value' && write.value instanceof ArrayBuffer
@@ -247,6 +259,7 @@ class TransactionContext implements KVTransaction {
   }
 
   getJSON<T = unknown>(key: string): T | undefined {
+    this.assertOpen()
     const write = this.writes.get(key)
     if (write !== undefined) {
       // Parse the staged snapshot so reads match what commit will write and
@@ -257,16 +270,19 @@ class TransactionContext implements KVTransaction {
   }
 
   contains(key: string): boolean {
+    this.assertOpen()
     const write = this.writes.get(key)
     if (write !== undefined) return write.kind !== 'delete'
     return this.store.contains(key)
   }
 
   delete(key: string): void {
+    this.assertOpen()
     this.writes.set(key, { kind: 'delete' })
   }
 
   drain(): Array<{ key: string; write: PendingWrite }> {
+    this.committed = true
     return [...this.writes].map(([key, write]) => ({ key, write }))
   }
 }
@@ -800,7 +816,12 @@ export function createKV(options: KVOptions = {}): KV {
   )
   if (options.persistence === 'none') {
     return new KV(
-      getFactory().inMemory(id, maxEntries, ttlSweepIntervalMs),
+      getFactory().inMemory(
+        id,
+        options.recreate ?? false,
+        maxEntries,
+        ttlSweepIntervalMs
+      ),
       '',
       true,
       `mem\0${id}`

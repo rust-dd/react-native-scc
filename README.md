@@ -315,7 +315,7 @@ const persistedReducer = persistReducer(
 | `size` | — | `number` |
 | `close()` | — | `void` |
 
-Reading a key that holds a different type returns `undefined` (matching react-native-mmkv). Numbers are IEEE-754 doubles, i.e. exactly JS number semantics.
+Reading a key that holds a different type returns `undefined` (matching react-native-mmkv). Numbers are IEEE-754 doubles, i.e. exactly JS number semantics. Keys and strings are stored as UTF-8, so a lone surrogate becomes U+FFFD: `'a\uD83D'` and `'a\uD83C'` name the same key.
 
 ## Durability model
 

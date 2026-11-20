@@ -5,5 +5,5 @@ export interface SccKv extends HybridObject<{
     android: 'c++';
 }> {
     open(dir: string, id: string, strictDurability: boolean, recreate: boolean, encryptionKey?: string, maxEntries?: number, ttlSweepIntervalMs?: number): SccKvInstance;
-    inMemory(id: string, maxEntries?: number, ttlSweepIntervalMs?: number): SccKvInstance;
+    inMemory(id: string, recreate: boolean, maxEntries?: number, ttlSweepIntervalMs?: number): SccKvInstance;
 }

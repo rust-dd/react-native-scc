@@ -29,7 +29,7 @@ export const dispatchErrors: unknown[] = []
 
 const stores = new Map<string, FakeStore>()
 
-function mockGetStore(id: string, recreate = false): FakeStore {
+function mockGetStore(id: string, recreate = false, volatile = false): FakeStore {
   const live = stores.get(id)
   if (live !== undefined && !live.closed) {
     if (recreate) {
@@ -39,7 +39,7 @@ function mockGetStore(id: string, recreate = false): FakeStore {
     }
     return live
   }
-  const store = new FakeStore(recreate ? undefined : live?.map)
+  const store = new FakeStore(recreate || volatile ? undefined : live?.map)
   stores.set(id, store)
   return store
 }
@@ -198,7 +198,8 @@ export const mockNitroModule = {
       return {
         open: (_dir: string, id: string, _strict: boolean, recreate: boolean) =>
           mockMakeInstance(mockGetStore(id, recreate)),
-        inMemory: (id: string) => mockMakeInstance(mockGetStore(`mem:${id}`)),
+        inMemory: (id: string, recreate: boolean) =>
+          mockMakeInstance(mockGetStore(`mem:${id}`, recreate, true)),
       }
     },
   },

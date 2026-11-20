@@ -43,6 +43,7 @@ struct SccKvStore *scc_kv_open(const char *dir,
  * Returns the named in-memory store, creating it on first use. NULL on error.
  */
 struct SccKvStore *scc_kv_in_memory(const char *id,
+                                    bool recreate,
                                     uintptr_t max_entries,
                                     uint64_t ttl_sweep_interval_ms);
 

@@ -99,6 +99,7 @@ fn check_options(
 /// id with different eviction options is an error, mirroring the disk path.
 pub fn in_memory(
     id: &str,
+    recreate: bool,
     max_entries: Option<usize>,
     sweep_interval: Option<Duration>,
 ) -> Result<Arc<Store>> {
@@ -109,7 +110,11 @@ pub fn in_memory(
         sweep_interval,
     };
     if let Some(existing) = registry().read_sync(&key, |_, entry| {
-        if entry.options == requested {
+        if recreate {
+            Err(Error::Config(format!(
+                "store '{id}' is already open; close it before reopening with recreate"
+            )))
+        } else if entry.options == requested {
             Ok(entry.store.clone())
         } else {
             Err(Error::Config(format!(
@@ -232,17 +237,19 @@ mod tests {
             let _guard = registry_lock().lock();
             panic!("simulated panic while opening");
         });
-        let store = in_memory("after-panic", None, None).unwrap();
+        let store = in_memory("after-panic", false, None, None).unwrap();
         close_store(&store).unwrap();
     }
 
     #[test]
     fn in_memory_registry_dedupes() {
-        let a = in_memory("state", None, None).unwrap();
-        let b = in_memory("state", None, None).unwrap();
-        assert!(in_memory("state", Some(5), None).is_err());
+        let a = in_memory("state", false, None, None).unwrap();
+        let b = in_memory("state", false, None, None).unwrap();
+        assert!(in_memory("state", false, Some(5), None).is_err());
         assert!(Arc::ptr_eq(&a, &b));
+        assert!(in_memory("state", true, None, None).is_err());
         close_store(&a).unwrap();
+        assert!(in_memory("state", true, None, None).unwrap().is_empty());
     }
 
     #[test]

@@ -137,6 +137,7 @@ pub unsafe extern "C" fn scc_kv_open(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn scc_kv_in_memory(
     id: *const c_char,
+    recreate: bool,
     max_entries: usize,
     ttl_sweep_interval_ms: u64,
 ) -> *mut SccKvStore {
@@ -145,7 +146,7 @@ pub unsafe extern "C" fn scc_kv_in_memory(
         let max = (max_entries > 0).then_some(max_entries);
         let sweep =
             (ttl_sweep_interval_ms > 0).then(|| Duration::from_millis(ttl_sweep_interval_ms));
-        let store = kv_core::in_memory(id, max, sweep).map_err(|e| e.to_string())?;
+        let store = kv_core::in_memory(id, recreate, max, sweep).map_err(|e| e.to_string())?;
         Ok(SccKvStore { store }.into_raw())
     })
 }
