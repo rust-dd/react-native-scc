@@ -11,7 +11,7 @@ export interface KVOptions {
   durability?: 'relaxed' | 'strict'
   /** Wipe existing files on open. Default false. */
   recreate?: boolean
-  /** Enables encryption at rest (ChaCha20-Poly1305; the cipher key is derived from this passphrase). */
+  /** Enables encryption at rest; use a high-entropy random secret, not a password (one SHA-256, no salt). */
   encryptionKey?: string
   /** Maximum live entries before the background sweeper evicts keys. */
   maxEntries?: number

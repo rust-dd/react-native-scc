@@ -117,7 +117,9 @@ kv.getMany(['a', 'b', 'missing']) // ['1', '2', undefined]
 
 ### Instances
 
-Every `id` is an independent store with its own files (`<id>.snap` + `<id>.wal`), its own background writer, and its own settings. Opening the same `id` twice returns the same underlying store.
+Every `id` is an independent store with its own files (`<id>.snap` + `<id>.wal`), its own background writer, and its own settings. Opening the same `id` twice returns the same underlying store. The `id` becomes a file name, so it must be non-empty and contain no `/` or `\`.
+
+An open store holds an exclusive lock on `<id>.lock`. Opening the same files from a second process (an Android `android:process`, or an iOS app extension sharing an App Group `path`) fails with an error instead of running two writers over one log.
 
 ```ts
 const settings = createKV({ id: 'settings' })
@@ -131,10 +133,10 @@ Options: `id`, `path` (override the storage directory), `persistence: 'wal' | 'n
 ### Encryption at rest
 
 ```ts
-const vault = createKV({ id: 'vault', encryptionKey: 'my-secret-passphrase' })
+const vault = createKV({ id: 'vault', encryptionKey: keyFromKeychain })
 ```
 
-Everything the instance writes to disk — snapshot and write-ahead log alike — is encrypted with ChaCha20-Poly1305; the 256-bit cipher key is derived from the passphrase with SHA-256. Opening an encrypted store with a wrong key (or without one) fails without touching the files, and opening a plaintext store with a key fails too, so a configuration mistake can never silently corrupt or rewrite data. Store the passphrase in the platform keystore (Keychain / Android Keystore) — the library deliberately does not manage key storage for you.
+Everything the instance writes to disk — snapshot and write-ahead log alike — is encrypted with ChaCha20-Poly1305; the 256-bit cipher key is derived from `encryptionKey` with a single SHA-256, with no salt and no work factor. Use a high-entropy random secret, such as 32 random bytes generated once and kept hex-encoded in the keystore, never a password a person chose: a weak passphrase can be brute-forced from the files. An empty `encryptionKey` throws. Opening an encrypted store with a wrong key (or without one) fails without touching the files, and opening a plaintext store with a key fails too, so a configuration mistake can never silently corrupt or rewrite data. Store the passphrase in the platform keystore (Keychain / Android Keystore) — the library deliberately does not manage key storage for you.
 
 ### TTL
 
@@ -143,7 +145,9 @@ kv.set('session.token', token, { ttlMs: 15 * 60 * 1000 })
 kv.setJSON('cache.profile', profile, { ttlMs: 60_000 })
 ```
 
-Expired keys read as missing immediately (`get`, `contains`, `getAllKeys` all agree), and a background sweeper physically reclaims them — also from disk — on the instance's WAL thread (sweep interval: 30 s). TTL persists across restarts: a key set with a 1-hour TTL is still gone after a kill + relaunch past its deadline.
+Expired keys read as missing immediately (`get`, `contains`, `getAllKeys` and `delete` all agree), and a background sweeper physically reclaims them — also from disk — on the instance's WAL thread (sweep interval: 30 s, `ttlSweepIntervalMs` to change it). In-memory stores start the same sweeper on their first TTL write. TTL persists across restarts: a key set with a 1-hour TTL is still gone after a kill + relaunch past its deadline.
+
+Listeners and hooks learn about an expiry only when the sweep removes the key, so a `useKVString('session.token')` keeps showing the old value for up to one sweep interval. Read the key when the value matters, or lower `ttlSweepIntervalMs`.
 
 ### Eviction
 
