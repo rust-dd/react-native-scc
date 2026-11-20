@@ -357,3 +357,32 @@ fn plain_in_memory_store_reclaims_expired_keys() {
     assert_eq!(*events.lock().unwrap(), 200);
     store.close().unwrap();
 }
+
+#[test]
+fn ids_that_are_not_plain_file_names_are_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    for id in ["", "sub/x", "/abs", "..\\up"] {
+        assert!(
+            matches!(
+                Store::open(dir.path(), id, fast_opts()),
+                Err(Error::Config(_))
+            ),
+            "{id:?}"
+        );
+    }
+}
+
+#[test]
+fn the_same_files_cannot_be_opened_twice_until_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = Store::open(dir.path(), "locked", fast_opts()).unwrap();
+    assert!(matches!(
+        Store::open(dir.path(), "locked", fast_opts()),
+        Err(Error::Config(_))
+    ));
+    first.close().unwrap();
+    Store::open(dir.path(), "locked", fast_opts())
+        .unwrap()
+        .close()
+        .unwrap();
+}

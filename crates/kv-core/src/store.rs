@@ -70,6 +70,7 @@ pub struct Store {
     mutation_gate: Option<Arc<Mutex<()>>>,
     ungated_mutations: AtomicUsize,
     close_gate: Mutex<()>,
+    file_lock: Mutex<Option<std::fs::File>>,
 }
 
 struct MutationGuard<'a> {
@@ -107,6 +108,7 @@ impl Store {
             mutation_gate: None,
             ungated_mutations: AtomicUsize::new(0),
             close_gate: Mutex::new(()),
+            file_lock: Mutex::new(None),
         })
     }
 
@@ -140,16 +142,23 @@ impl Store {
             mutation_gate: Some(mutation_gate),
             ungated_mutations: AtomicUsize::new(0),
             close_gate: Mutex::new(()),
+            file_lock: Mutex::new(None),
         }))
     }
 
     /// Recovered state is snapshot ∘ WAL-replay; records duplicated across the
     /// two are harmless because ops are idempotent and replayed in enqueue order.
     pub fn open(dir: &Path, id: &str, opts: OpenOptions) -> Result<Arc<Store>> {
+        if id.is_empty() || id.contains(['/', '\\', '\0']) {
+            return Err(Error::Config(format!(
+                "invalid store id {id:?}: it must be a non-empty file name"
+            )));
+        }
         std::fs::create_dir_all(dir).map_err(|e| Error::Io {
             path: dir.to_path_buf(),
             source: e,
         })?;
+        let file_lock = lock_files(dir, id)?;
         let snap_path = dir.join(format!("{id}.snap"));
         let wal_path = dir.join(format!("{id}.wal"));
         if opts.recreate {
@@ -207,6 +216,7 @@ impl Store {
             mutation_gate: None,
             ungated_mutations: AtomicUsize::new(0),
             close_gate: Mutex::new(()),
+            file_lock: Mutex::new(Some(file_lock)),
         }))
     }
 
@@ -320,6 +330,7 @@ impl Store {
                 self.closed.store(true, Ordering::Release);
             }
             wal.join();
+            self.file_lock.lock().unwrap().take();
             return if first { wal.check() } else { Ok(()) };
         }
         if let Some(gate) = &self.mutation_gate {
@@ -375,6 +386,27 @@ impl Store {
     #[cfg(test)]
     pub(crate) fn wal_for_test(&self) -> Option<&WalHandle> {
         self.wal.as_ref()
+    }
+}
+
+/// Another process, or another spelling of the same path, would otherwise run a second WAL writer.
+fn lock_files(dir: &Path, id: &str) -> Result<std::fs::File> {
+    let path = dir.join(format!("{id}.lock"));
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|source| Error::Io {
+            path: path.clone(),
+            source,
+        })?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(Error::Config(format!(
+            "store '{id}' is already open in another process or under another path spelling"
+        ))),
+        Err(std::fs::TryLockError::Error(source)) => Err(Error::Io { path, source }),
     }
 }
 
