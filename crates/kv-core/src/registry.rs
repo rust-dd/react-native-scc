@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
 use crate::error::{Error, Result};
@@ -30,6 +30,12 @@ fn registry_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+fn lock_registry() -> MutexGuard<'static, ()> {
+    registry_lock()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
 // Canonicalized so two spellings of the same directory (symlink, `./`,
 // trailing slash) can never open two stores — and two WAL writers — over the
 // same files.
@@ -40,7 +46,7 @@ fn disk_key(dir: &Path, id: &str) -> String {
 
 /// Opens (or returns the already-open) persistent store for `dir`/`id`.
 pub fn open_or_get(dir: &Path, id: &str, opts: OpenOptions) -> Result<Arc<Store>> {
-    let _guard = registry_lock().lock().unwrap();
+    let _guard = lock_registry();
     let _ = std::fs::create_dir_all(dir);
     let key = disk_key(dir, id);
     let stored_opts = normalized_options(&opts);
@@ -98,7 +104,7 @@ pub fn in_memory(
     max_entries: Option<usize>,
     sweep_interval: Option<Duration>,
 ) -> Result<Arc<Store>> {
-    let _guard = registry_lock().lock().unwrap();
+    let _guard = lock_registry();
     let key = format!("mem::{id}");
     let requested = StoredOptions::Mem {
         max_entries,
@@ -119,7 +125,7 @@ pub fn in_memory(
         Store::in_memory_evicting(
             max_entries,
             sweep_interval.unwrap_or(Duration::from_secs(30)),
-        )
+        )?
     } else {
         Store::in_memory()
     };
@@ -137,7 +143,7 @@ pub fn in_memory(
 
 /// Deregisters by identity, so a stale handle never closes a store reopened under its id.
 pub fn close_store(store: &Arc<Store>) -> Result<()> {
-    let _guard = registry_lock().lock().unwrap();
+    let _guard = lock_registry();
     registry().retain_sync(|_, entry| !Arc::ptr_eq(&entry.store, store));
     store.close()
 }
@@ -220,6 +226,16 @@ mod tests {
         assert!(!Arc::ptr_eq(&a, &b));
         assert_eq!(b.get("k"), None);
         close_store(&b).unwrap();
+    }
+
+    #[test]
+    fn a_panic_under_the_registry_lock_does_not_wedge_it() {
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = registry_lock().lock();
+            panic!("simulated panic while opening");
+        });
+        let store = in_memory("after-panic", None, None).unwrap();
+        close_store(&store).unwrap();
     }
 
     #[test]

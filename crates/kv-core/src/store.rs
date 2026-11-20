@@ -104,7 +104,10 @@ impl Store {
 
     /// In-memory store with a background sweeper thread that reclaims expired
     /// keys and, when `max_entries` is set, evicts down to fit.
-    pub fn in_memory_evicting(max_entries: Option<usize>, sweep_interval: Duration) -> Arc<Store> {
+    pub fn in_memory_evicting(
+        max_entries: Option<usize>,
+        sweep_interval: Duration,
+    ) -> Result<Arc<Store>> {
         let map = Arc::new(crate::new_value_map());
         let listeners = Arc::new(Listeners::new());
         let closed = Arc::new(AtomicBool::new(false));
@@ -116,8 +119,8 @@ impl Store {
             sweep_interval,
             mutation_gate.clone(),
             closed.clone(),
-        );
-        Arc::new(Store {
+        )?;
+        Ok(Arc::new(Store {
             map,
             listeners,
             closed,
@@ -127,7 +130,7 @@ impl Store {
             mutation_gate: Some(mutation_gate),
             ungated_mutations: AtomicUsize::new(0),
             close_gate: Mutex::new(()),
-        })
+        }))
     }
 
     /// Recovered state is snapshot ∘ WAL-replay; records duplicated across the

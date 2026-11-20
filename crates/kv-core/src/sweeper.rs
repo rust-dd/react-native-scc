@@ -1,9 +1,11 @@
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::ValueMap;
+use crate::error::{Error, Result};
 use crate::notify::Listeners;
 
 /// Owns the in-memory store's background sweep thread. `stop()` (called from
@@ -50,47 +52,53 @@ pub(crate) fn spawn(
     sweep_interval: Duration,
     mutation_gate: Arc<Mutex<()>>,
     closed: Arc<AtomicBool>,
-) -> SweeperHandle {
+) -> Result<SweeperHandle> {
     let shutdown = Arc::new(AtomicBool::new(false));
     let stop = shutdown.clone();
-    let handle = std::thread::spawn(move || {
-        loop {
-            std::thread::park_timeout(sweep_interval);
-            if stop.load(Ordering::Acquire) {
-                break;
-            }
-            let now = crate::now_ms();
-            let (expired, evicted) = crate::compute_doomed(&map, now, max_entries);
-            let mut removed = Vec::new();
-            {
-                let _mutation = mutation_gate.lock().unwrap();
-                if stop.load(Ordering::Acquire) || closed.load(Ordering::Acquire) {
+    let spawned = std::thread::Builder::new()
+        .name("kv-core-sweeper".into())
+        .spawn(move || {
+            loop {
+                std::thread::park_timeout(sweep_interval);
+                if stop.load(Ordering::Acquire) {
                     break;
                 }
-                for key in expired {
-                    // The entry may have been rewritten after the scan.
-                    if map
-                        .remove_if_sync(&key, |slot| slot.is_expired(now))
-                        .is_some()
-                    {
-                        removed.push(key);
+                let now = crate::now_ms();
+                let (expired, evicted) = crate::compute_doomed(&map, now, max_entries);
+                let mut removed = Vec::new();
+                {
+                    let _mutation = mutation_gate.lock().unwrap();
+                    if stop.load(Ordering::Acquire) || closed.load(Ordering::Acquire) {
+                        break;
+                    }
+                    for key in expired {
+                        // The entry may have been rewritten after the scan.
+                        if map
+                            .remove_if_sync(&key, |slot| slot.is_expired(now))
+                            .is_some()
+                        {
+                            removed.push(key);
+                        }
+                    }
+                    for key in evicted {
+                        if map.remove_sync(&key).is_some() {
+                            removed.push(key);
+                        }
                     }
                 }
-                for key in evicted {
-                    if map.remove_sync(&key).is_some() {
-                        removed.push(key);
-                    }
+                for key in removed {
+                    listeners.notify(Some(key.as_str()));
                 }
             }
-            for key in removed {
-                listeners.notify(Some(key.as_str()));
-            }
-        }
-    });
-    SweeperHandle {
+        });
+    let handle = spawned.map_err(|source| Error::Io {
+        path: PathBuf::new(),
+        source,
+    })?;
+    Ok(SweeperHandle {
         shutdown,
         handle: Mutex::new(Some(handle)),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -100,7 +108,7 @@ mod tests {
 
     #[test]
     fn in_memory_sweeper_evicts_above_max() {
-        let s = Store::in_memory_evicting(Some(2), Duration::from_millis(20));
+        let s = Store::in_memory_evicting(Some(2), Duration::from_millis(20)).unwrap();
         for i in 0..6 {
             s.set(&format!("k{i}"), Value::Num(i as f64)).unwrap();
         }
@@ -110,7 +118,7 @@ mod tests {
 
     #[test]
     fn close_stops_the_sweeper() {
-        let s = Store::in_memory_evicting(Some(2), Duration::from_millis(200));
+        let s = Store::in_memory_evicting(Some(2), Duration::from_millis(200)).unwrap();
         for i in 0..6 {
             s.set(&format!("k{i}"), Value::Num(i as f64)).unwrap();
         }
