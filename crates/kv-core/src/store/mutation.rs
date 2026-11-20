@@ -96,25 +96,9 @@ impl Store {
         Ok(())
     }
 
-    /// Applies `ops` as one crash-atomic unit while preserving the borrowed API.
+    /// Applies `ops` as one crash-atomic unit; clones into the owned path that production uses.
     pub fn apply_batch(&self, ops: &[BatchOp]) -> Result<()> {
-        if ops.is_empty() {
-            return self.mutate(|_| ());
-        }
-        record::validate(&Op::Batch {
-            ops: &batch_subs(ops),
-        })?;
-        let collect_keys = self.listeners.is_active();
-        let notify_keys = self.mutate_atomically(|log| {
-            if let Some(log) = log {
-                log.append(&Op::Batch {
-                    ops: &batch_subs(ops),
-                });
-            }
-            self.apply_ops_borrowed(ops, collect_keys)
-        })?;
-        self.notify_keys(&notify_keys);
-        Ok(())
+        self.apply_batch_owned(ops.to_vec())
     }
 
     /// Applies an owned crash-atomic batch without cloning values into the map.
@@ -138,23 +122,6 @@ impl Store {
         Ok(())
     }
 
-    fn apply_ops_borrowed(&self, ops: &[BatchOp], collect: bool) -> Vec<CompactString> {
-        let mut notify = Vec::new();
-        for op in ops {
-            let (key, changed) = match op {
-                BatchOp::Set { key, value } => {
-                    apply_set(&self.map, key, value.clone(), 0);
-                    (key, true)
-                }
-                BatchOp::Delete { key } => (key, remove_live(&self.map, key)),
-            };
-            if collect && changed {
-                notify.push(key.as_str().into());
-            }
-        }
-        notify
-    }
-
     fn apply_ops_owned(&self, ops: Vec<BatchOp>, collect: bool) -> Vec<CompactString> {
         let mut notify = Vec::new();
         for op in ops {
@@ -163,7 +130,7 @@ impl Store {
                     if collect {
                         notify.push(key.as_str().into());
                     }
-                    apply_set_owned(&self.map, key, value, 0);
+                    apply_set(&self.map, key, value, 0);
                 }
                 BatchOp::Delete { key } => {
                     let changed = remove_live(&self.map, &key);
@@ -282,40 +249,23 @@ fn apply_set_str(map: &crate::ValueMap, key: &str, value: &str) {
     }
 }
 
-fn apply_set(map: &crate::ValueMap, key: &str, value: Value, expires_at_ms: u64) {
+fn apply_set<K: AsRef<str> + Into<CompactString>>(
+    map: &crate::ValueMap,
+    key: K,
+    value: Value,
+    expires_at_ms: u64,
+) {
     let mut slot = Some(crate::Slot {
         value,
         expires_at_ms,
     });
     let updated = map
-        .update_sync(key, |_, existing| {
+        .update_sync(key.as_ref(), |_, existing| {
             *existing = slot.take().expect("slot consumed twice")
         })
         .is_some();
     if !updated {
-        match map.entry_sync(CompactString::from(key)) {
-            scc::hash_map::Entry::Occupied(mut o) => {
-                *o.get_mut() = slot.take().expect("slot consumed twice")
-            }
-            scc::hash_map::Entry::Vacant(v) => {
-                v.insert_entry(slot.take().expect("slot consumed twice"));
-            }
-        }
-    }
-}
-
-fn apply_set_owned(map: &crate::ValueMap, key: String, value: Value, expires_at_ms: u64) {
-    let mut slot = Some(crate::Slot {
-        value,
-        expires_at_ms,
-    });
-    let updated = map
-        .update_sync(key.as_str(), |_, existing| {
-            *existing = slot.take().expect("slot consumed twice")
-        })
-        .is_some();
-    if !updated {
-        match map.entry_sync(CompactString::from(key)) {
+        match map.entry_sync(key.into()) {
             scc::hash_map::Entry::Occupied(mut o) => {
                 *o.get_mut() = slot.take().expect("slot consumed twice")
             }

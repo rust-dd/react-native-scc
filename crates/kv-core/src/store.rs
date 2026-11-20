@@ -50,6 +50,7 @@ impl Default for OpenOptions {
 }
 
 /// A single operation in a crash-atomic WAL batch applied via [`Store::apply_batch`].
+#[derive(Clone)]
 pub enum BatchOp {
     Set { key: String, value: Value },
     Delete { key: String },
