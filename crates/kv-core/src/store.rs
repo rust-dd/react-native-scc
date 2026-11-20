@@ -1,6 +1,6 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock};
 use std::time::Duration;
 
 use crate::crypto::Cipher;
@@ -61,6 +61,8 @@ pub struct Store {
     closed: Arc<AtomicBool>,
     wal: Option<WalHandle>,
     sweeper: Option<crate::sweeper::SweeperHandle>,
+    ttl_sweeper: OnceLock<crate::sweeper::SweeperHandle>,
+    ttl_sweep_interval: Duration,
     /// Read side of the compaction gate: multi-op batches hold it across map
     /// application + WAL append so the writer's compact() (write side) can
     /// never snapshot a half-applied batch and truncate its record away.
@@ -88,6 +90,10 @@ impl Store {
     /// Creates a store whose mutations rely on the map's sharded locking.
     /// Closing waits for admitted mutations without serializing normal writes.
     pub fn in_memory() -> Arc<Store> {
+        Self::in_memory_sweeping_ttl_every(Duration::from_secs(30))
+    }
+
+    pub(crate) fn in_memory_sweeping_ttl_every(interval: Duration) -> Arc<Store> {
         let closed = Arc::new(AtomicBool::new(false));
         Arc::new(Store {
             map: Arc::new(crate::new_value_map()),
@@ -95,6 +101,8 @@ impl Store {
             closed,
             wal: None,
             sweeper: None,
+            ttl_sweeper: OnceLock::new(),
+            ttl_sweep_interval: interval,
             compact_gate: Arc::new(RwLock::new(())),
             mutation_gate: None,
             ungated_mutations: AtomicUsize::new(0),
@@ -126,6 +134,8 @@ impl Store {
             closed,
             wal: None,
             sweeper: Some(sweeper),
+            ttl_sweeper: OnceLock::new(),
+            ttl_sweep_interval: sweep_interval,
             compact_gate: Arc::new(RwLock::new(())),
             mutation_gate: Some(mutation_gate),
             ungated_mutations: AtomicUsize::new(0),
@@ -191,6 +201,8 @@ impl Store {
             closed: Arc::new(AtomicBool::new(false)),
             wal: Some(wal),
             sweeper: None,
+            ttl_sweeper: OnceLock::new(),
+            ttl_sweep_interval: opts.ttl_sweep_interval,
             compact_gate,
             mutation_gate: None,
             ungated_mutations: AtomicUsize::new(0),
@@ -330,6 +342,9 @@ impl Store {
             while self.ungated_mutations.load(Ordering::Acquire) & MUTATION_COUNT_MASK != 0 {
                 std::thread::yield_now();
             }
+            if let Some(sweeper) = self.ttl_sweeper.get() {
+                sweeper.stop();
+            }
             if let Some(sweeper) = &self.sweeper {
                 sweeper.signal_stop();
             }
@@ -338,6 +353,23 @@ impl Store {
             sweeper.join();
         }
         Ok(())
+    }
+
+    /// Runs inside a mutation, so close() always sees and stops the sweeper it starts.
+    fn ensure_ttl_sweeper(&self) {
+        if self.wal.is_some() || self.sweeper.is_some() || self.ttl_sweeper.get().is_some() {
+            return;
+        }
+        if let Ok(sweeper) = crate::sweeper::spawn(
+            self.map.clone(),
+            self.listeners.clone(),
+            None,
+            self.ttl_sweep_interval,
+            Arc::new(Mutex::new(())),
+            self.closed.clone(),
+        ) {
+            let _ = self.ttl_sweeper.set(sweeper);
+        }
     }
 
     #[cfg(test)]

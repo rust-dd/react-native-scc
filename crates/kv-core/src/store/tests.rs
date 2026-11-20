@@ -340,3 +340,20 @@ fn deleting_an_expired_key_reports_it_missing() {
         store.close().unwrap();
     }
 }
+
+#[test]
+fn plain_in_memory_store_reclaims_expired_keys() {
+    let store = Store::in_memory_sweeping_ttl_every(Duration::from_millis(20));
+    let events = Arc::new(Mutex::new(0usize));
+    let sink = events.clone();
+    store.subscribe(move |_| *sink.lock().unwrap() += 1);
+    for i in 0..100 {
+        store
+            .set_with_ttl(&format!("k{i}"), Value::Num(1.0), 1)
+            .unwrap();
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(store.map.len(), 0);
+    assert_eq!(*events.lock().unwrap(), 200);
+    store.close().unwrap();
+}

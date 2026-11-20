@@ -63,6 +63,7 @@ impl Store {
                     expires_at_ms,
                 });
             }
+            self.ensure_ttl_sweeper();
             apply_set(&self.map, key, value, expires_at_ms);
         })?;
         self.listeners.notify(Some(key));
