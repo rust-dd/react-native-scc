@@ -270,7 +270,7 @@ import { atomWithKV } from 'react-native-scc-storage/jotai'
 const counterAtom = atomWithKV('counter', 0)
 ```
 
-Reads synchronously on init (`getOnInit`) and reacts to writes made outside jotai — including other KV handles — via the native change listener.
+Reads synchronously on init (`getOnInit`) and reacts to writes made outside jotai — including other KV handles — via the native change listener. Setting the atom to `undefined` deletes the key, like the hooks do.
 
 ### redux-persist
 

@@ -129,3 +129,39 @@ test('a default-backed jotai atom keeps reacting after the default store reopens
   unsubscribe()
   getDefaultKV().close()
 })
+
+test('jotai keeps its own write instead of a reparsed echo', async () => {
+  const kv = createKV({ id: 'jotai-echo' })
+  const when = atomWithKV<{ at: Date } | null>('when', null, kv)
+  const store = createJotaiStore()
+  let notifications = 0
+  const unsubscribe = store.sub(when, () => notifications++)
+
+  const value = { at: new Date(0) }
+  store.set(when, value)
+  await flushMicrotasks()
+
+  expect(store.get(when)).toBe(value)
+  expect(notifications).toBe(1)
+
+  kv.setJSON('when', { at: 'external' })
+  await flushMicrotasks()
+  expect(store.get(when)).toEqual({ at: 'external' })
+  unsubscribe()
+})
+
+test('jotai set to undefined deletes the key', async () => {
+  const kv = createKV({ id: 'jotai-undefined' })
+  const token = atomWithKV<string | undefined>('token', 'anon', kv)
+  const store = createJotaiStore()
+  const unsubscribe = store.sub(token, () => {})
+
+  store.set(token, 'secret')
+  expect(() => store.set(token, undefined)).not.toThrow()
+  await flushMicrotasks()
+
+  expect(kv.contains('token')).toBe(false)
+  expect(store.get(token)).toBeUndefined()
+  expect(createJotaiStore().get(atomWithKV('token', 'anon', kv))).toBe('anon')
+  unsubscribe()
+})

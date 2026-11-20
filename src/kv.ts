@@ -76,6 +76,7 @@ const TAG_JSON = 4
 
 export const INTERNAL_GET_JSON_TEXT = Symbol('scc.getJSONText')
 export const INTERNAL_IS_CLOSED = Symbol('scc.isClosed')
+export const INTERNAL_SET_JSON = Symbol('scc.setJSON')
 
 const textEncoder =
   typeof TextEncoder === 'undefined' ? undefined : new TextEncoder()
@@ -521,6 +522,12 @@ export class KV {
       return
     }
     this.native.setJson(fullKey, json)
+  }
+
+  [INTERNAL_SET_JSON](key: string, value: unknown): string {
+    const json = serializeJSON(value)
+    this.native.setJson(this.fullKey(key), json)
+    return json
   }
 
   getString(key: string): string | undefined {

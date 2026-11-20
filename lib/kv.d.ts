@@ -6,6 +6,7 @@ export interface KVSubscription {
 }
 export declare const INTERNAL_GET_JSON_TEXT: unique symbol;
 export declare const INTERNAL_IS_CLOSED: unique symbol;
+export declare const INTERNAL_SET_JSON: unique symbol;
 export interface KVTransaction {
     set(key: string, value: KVValue): void;
     setJSON(key: string, value: unknown): void;
@@ -57,6 +58,7 @@ export declare class KV {
     observeJSON<T = unknown, S = T | undefined>(key: string, selector: (value: T | undefined) => S, listener: (selected: S) => void, equals?: (a: S, b: S) => boolean): KVSubscription;
     set(key: string, value: KVValue, options?: SetOptions): void;
     setJSON(key: string, value: unknown, options?: SetOptions): void;
+    [INTERNAL_SET_JSON](key: string, value: unknown): string;
     getString(key: string): string | undefined;
     getNumber(key: string): number | undefined;
     getBoolean(key: string): boolean | undefined;
