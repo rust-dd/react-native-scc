@@ -12,7 +12,7 @@ mod wal;
 pub use compact_str::CompactString;
 pub use crypto::derive_encryption_key;
 pub use error::{Error, Result};
-pub use registry::{close, in_memory, open_or_get};
+pub use registry::{close_store, in_memory, open_or_get};
 pub use store::{BatchOp, OpenOptions, Store};
 pub use value::Value;
 pub use wal::Durability;

@@ -1,12 +1,9 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use kv_core::Store;
 
 pub struct SccKvStore {
     pub(crate) store: Arc<Store>,
-    pub(crate) dir: Option<PathBuf>,
-    pub(crate) id: String,
 }
 
 impl SccKvStore {

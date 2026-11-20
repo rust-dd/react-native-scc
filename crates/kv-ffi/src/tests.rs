@@ -379,3 +379,32 @@ mod features;
 mod listeners;
 mod multi_get;
 mod transactions;
+
+#[test]
+fn stale_handle_close_keeps_reopened_store_usable() {
+    let dir = tempfile::tempdir().unwrap();
+    let dir_c = c(dir.path().to_str().unwrap());
+    let id = c("stale");
+    let open = || unsafe {
+        scc_kv_open(
+            dir_c.as_ptr(),
+            id.as_ptr(),
+            false,
+            false,
+            std::ptr::null(),
+            0,
+            0,
+            0,
+        )
+    };
+    let a = open();
+    let b = open();
+    assert_eq!(unsafe { scc_kv_close(a) }, 0);
+    let c_handle = open();
+    assert_eq!(unsafe { scc_kv_close(b) }, 0);
+    assert_eq!(set(c_handle, "k", 0, b"v"), 0, "{:?}", last_error());
+    assert_eq!(unsafe { scc_kv_close(c_handle) }, 0);
+    for h in [a, b, c_handle] {
+        unsafe { scc_kv_release(h) };
+    }
+}

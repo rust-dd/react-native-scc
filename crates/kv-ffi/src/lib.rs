@@ -130,12 +130,7 @@ pub unsafe extern "C" fn scc_kv_open(
             ..OpenOptions::default()
         };
         let store = kv_core::open_or_get(Path::new(dir), id, opts).map_err(|e| e.to_string())?;
-        Ok(SccKvStore {
-            store,
-            dir: Some(Path::new(dir).to_path_buf()),
-            id: id.to_string(),
-        }
-        .into_raw())
+        Ok(SccKvStore { store }.into_raw())
     })
 }
 
@@ -152,12 +147,7 @@ pub unsafe extern "C" fn scc_kv_in_memory(
         let sweep =
             (ttl_sweep_interval_ms > 0).then(|| Duration::from_millis(ttl_sweep_interval_ms));
         let store = kv_core::in_memory(id, max, sweep).map_err(|e| e.to_string())?;
-        Ok(SccKvStore {
-            store,
-            dir: None,
-            id: id.to_string(),
-        }
-        .into_raw())
+        Ok(SccKvStore { store }.into_raw())
     })
 }
 
@@ -167,7 +157,7 @@ pub unsafe extern "C" fn scc_kv_in_memory(
 pub unsafe extern "C" fn scc_kv_close(h: *mut SccKvStore) -> i32 {
     guard(-1, || {
         let s = unsafe { store(h) }?;
-        kv_core::close(s.dir.as_deref(), &s.id).map_err(|e| e.to_string())?;
+        kv_core::close_store(&s.store).map_err(|e| e.to_string())?;
         Ok(0)
     })
 }

@@ -135,17 +135,11 @@ pub fn in_memory(
     }
 }
 
-/// Closes and deregisters a store. `dir: None` targets in-memory stores.
-pub fn close(dir: Option<&Path>, id: &str) -> Result<()> {
+/// Deregisters by identity, so a stale handle never closes a store reopened under its id.
+pub fn close_store(store: &Arc<Store>) -> Result<()> {
     let _guard = registry_lock().lock().unwrap();
-    let key = match dir {
-        Some(dir) => disk_key(dir, id),
-        None => format!("mem::{id}"),
-    };
-    if let Some((_, entry)) = registry().remove_sync(&key) {
-        entry.store.close()?;
-    }
-    Ok(())
+    registry().retain_sync(|_, entry| !Arc::ptr_eq(&entry.store, store));
+    store.close()
 }
 
 #[cfg(test)]
@@ -161,7 +155,7 @@ mod tests {
         assert!(Arc::ptr_eq(&a, &b));
         a.set("k", Value::Num(1.0)).unwrap();
         assert_eq!(b.get("k"), Some(Value::Num(1.0)));
-        close(Some(dir.path()), "shared").unwrap();
+        close_store(&a).unwrap();
     }
 
     #[test]
@@ -170,11 +164,11 @@ mod tests {
         let a = open_or_get(dir.path(), "cycle", OpenOptions::default()).unwrap();
         a.set("k", Value::Str("v".into())).unwrap();
         a.flush().unwrap();
+        close_store(&a).unwrap();
         drop(a);
-        close(Some(dir.path()), "cycle").unwrap();
         let b = open_or_get(dir.path(), "cycle", OpenOptions::default()).unwrap();
         assert_eq!(b.get("k"), Some(Value::Str("v".into())));
-        close(Some(dir.path()), "cycle").unwrap();
+        close_store(&b).unwrap();
     }
 
     #[test]
@@ -188,7 +182,44 @@ mod tests {
         let a = open_or_get(dir.path(), "canon", OpenOptions::default()).unwrap();
         let b = open_or_get(&spelled, "canon", OpenOptions::default()).unwrap();
         assert!(Arc::ptr_eq(&a, &b));
-        close(Some(dir.path()), "canon").unwrap();
+        close_store(&a).unwrap();
+    }
+
+    #[test]
+    fn stale_close_leaves_reopened_store_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = open_or_get(dir.path(), "stale", OpenOptions::default()).unwrap();
+        let b = open_or_get(dir.path(), "stale", OpenOptions::default()).unwrap();
+        close_store(&a).unwrap();
+        let c = open_or_get(dir.path(), "stale", OpenOptions::default()).unwrap();
+        assert!(!Arc::ptr_eq(&a, &c));
+        close_store(&b).unwrap();
+        c.set("k", Value::Num(1.0)).unwrap();
+        assert!(Arc::ptr_eq(
+            &c,
+            &open_or_get(dir.path(), "stale", OpenOptions::default()).unwrap()
+        ));
+        close_store(&c).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn close_deregisters_after_symlinked_dir_is_wiped() {
+        let root = tempfile::tempdir().unwrap();
+        let real = root.path().join("real");
+        let link = root.path().join("link");
+        std::fs::create_dir(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let a = open_or_get(&link, "wiped", OpenOptions::default()).unwrap();
+        a.set("k", Value::Num(1.0)).unwrap();
+        a.flush().unwrap();
+        std::fs::remove_dir_all(&real).unwrap();
+        close_store(&a).unwrap();
+        std::fs::create_dir(&real).unwrap();
+        let b = open_or_get(&link, "wiped", OpenOptions::default()).unwrap();
+        assert!(!Arc::ptr_eq(&a, &b));
+        assert_eq!(b.get("k"), None);
+        close_store(&b).unwrap();
     }
 
     #[test]
@@ -197,7 +228,7 @@ mod tests {
         let b = in_memory("state", None, None).unwrap();
         assert!(in_memory("state", Some(5), None).is_err());
         assert!(Arc::ptr_eq(&a, &b));
-        close(None, "state").unwrap();
+        close_store(&a).unwrap();
     }
 
     #[test]
@@ -226,7 +257,6 @@ mod tests {
             "recreate must not be ignored while a store is live"
         );
 
-        drop(store);
-        close(Some(dir.path()), "secure").unwrap();
+        close_store(&store).unwrap();
     }
 }

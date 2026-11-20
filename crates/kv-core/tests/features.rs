@@ -134,7 +134,6 @@ fn encrypted_store_round_trips_and_rejects_wrong_key() {
     assert_eq!(s.get("secret"), Some(Value::Str("classified".into())));
     assert_eq!(s.get("token"), Some(Value::Str("abc".into())));
     s.close().unwrap();
-    kv_core::close(Some(dir.path()), "vault").unwrap();
 
     let wrong = OpenOptions {
         encryption_key: Some(derive_encryption_key(b"wrong")),
