@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{JoinHandle, Thread};
 use std::time::Duration;
 
-use crossbeam_channel::{Sender, bounded};
+use std::sync::mpsc::{SyncSender, sync_channel};
 
 use crate::crypto::{self, Cipher};
 use crate::error::{Error, Result};
@@ -42,7 +42,7 @@ pub(crate) struct WriterConfig {
     pub ttl_epoch: Arc<std::sync::atomic::AtomicU64>,
 }
 
-type FlushAck = Sender<std::result::Result<(), String>>;
+type FlushAck = SyncSender<std::result::Result<(), String>>;
 
 /// Its mutex is also the mutation gate, so log order always matches map order.
 #[derive(Default)]
@@ -182,7 +182,7 @@ impl WalHandle {
     }
 
     pub(crate) fn flush(&self) -> Result<()> {
-        let (ack_tx, ack_rx) = bounded(1);
+        let (ack_tx, ack_rx) = sync_channel(1);
         {
             let mut log = self.shared.log.lock().unwrap();
             if log.closed {

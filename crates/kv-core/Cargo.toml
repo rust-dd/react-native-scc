@@ -8,7 +8,6 @@ publish = false
 chacha20poly1305 = { workspace = true }
 compact_str = { workspace = true }
 crc32fast = { workspace = true }
-crossbeam-channel = { workspace = true }
 foldhash = { workspace = true }
 getrandom = { workspace = true }
 memmap2 = { workspace = true }
