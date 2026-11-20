@@ -1,22 +1,23 @@
-const { execSync } = require('child_process')
+const { execFileSync } = require('child_process')
 const fs = require('fs')
 const path = require('path')
 const os = require('os')
 
 const ROOT = path.resolve(__dirname, '..')
-const IOS_LIB = path.join(ROOT, 'ios', 'Libs', 'scc_kv_ffi.xcframework')
-const ANDROID_LIB = path.join(
-  ROOT,
-  'android',
-  'src',
-  'main',
-  'jniLibs',
-  'arm64-v8a',
-  'libscc_kv_ffi.a'
-)
 
-const iosOk = fs.existsSync(IOS_LIB)
-const androidOk = fs.existsSync(ANDROID_LIB)
+function isFresh(script) {
+  try {
+    execFileSync('bash', [path.join(ROOT, 'scripts', script), '--check'], {
+      stdio: 'ignore',
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+const iosOk = os.platform() !== 'darwin' || isFresh('build-ios.sh')
+const androidOk = isFresh('build-android.sh')
 
 if (iosOk && androidOk) {
   process.exit(0)
@@ -24,7 +25,7 @@ if (iosOk && androidOk) {
 
 function hasRustToolchain() {
   try {
-    execSync('rustc --version', { stdio: 'ignore' })
+    execFileSync('rustc', ['--version'], { stdio: 'ignore' })
     return true
   } catch {
     return false
@@ -45,19 +46,16 @@ function findAndroidNdk() {
     const versions = fs
       .readdirSync(ndkDir)
       .filter((d) => !d.startsWith('.'))
-      .sort()
-      .reverse()
+      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
     if (versions.length > 0) return path.join(ndkDir, versions[0])
   }
   return null
 }
 
 function build(script, label, env) {
-  const scriptPath = path.join(ROOT, 'scripts', script)
-  if (!fs.existsSync(scriptPath)) return
   console.log(`[react-native-scc-storage] Building Rust for ${label}...`)
   try {
-    execSync(`bash "${scriptPath}"`, {
+    execFileSync('bash', [path.join(ROOT, 'scripts', script), '--if-needed'], {
       stdio: 'inherit',
       cwd: ROOT,
       env: { ...process.env, ...env },
@@ -74,14 +72,14 @@ if (!hasRustToolchain()) {
   if (!iosOk) missing.push('iOS')
   if (!androidOk) missing.push('Android')
   console.warn(
-    `[react-native-scc-storage] Prebuilt ${missing.join(' and ')} Rust libraries not found.\n` +
+    `[react-native-scc-storage] Prebuilt ${missing.join(' and ')} Rust libraries are missing or out of date.\n` +
       '  Install Rust (https://rustup.rs) and run: npm run rust:build\n' +
       '  Or install the package from npm which includes prebuilt binaries.'
   )
   process.exit(0)
 }
 
-if (os.platform() === 'darwin' && !iosOk) {
+if (!iosOk) {
   build('build-ios.sh', 'iOS', {})
 }
 

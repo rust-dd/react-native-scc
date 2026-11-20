@@ -81,6 +81,7 @@ target/
 # Prebuilt Rust libraries (user-built, not committed)
 ios/Libs/
 android/src/main/jniLibs/
+android/rust-sources.sha256
 
 # caches
 .eslintcache

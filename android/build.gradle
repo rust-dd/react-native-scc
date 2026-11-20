@@ -129,24 +129,32 @@ repositories {
   google()
 }
 
-tasks.register("buildRustLibs") {
-  def jniLibsDir = file("${projectDir}/src/main/jniLibs")
-  def markerLib = file("${jniLibsDir}/arm64-v8a/libscc_kv_ffi.a")
-  def buildScript = file("${projectDir}/../scripts/build-android.sh")
+// Project.exec is gone in Gradle 9; ExecOperations is the supported replacement.
+interface SccKvExecOperations {
+  @javax.inject.Inject
+  org.gradle.process.ExecOperations getExecOperations()
+}
 
-  onlyIf { !markerLib.exists() && buildScript.exists() }
+tasks.register("buildRustLibs") {
+  def buildScript = file("${projectDir}/../scripts/build-android.sh")
+  def repoRoot = projectDir.parentFile
+  def execOperations = project.objects.newInstance(SccKvExecOperations).execOperations
+
+  onlyIf { buildScript.exists() }
 
   doLast {
-    logger.lifecycle("[react-native-scc] Rust Android libs not found, building...")
-    exec {
-      commandLine "bash", buildScript.absolutePath
-      workingDir projectDir.parentFile
+    execOperations.exec {
+      commandLine "bash", buildScript.absolutePath, "--if-needed"
+      workingDir repoRoot
     }
   }
 }
 
+// CMake links the Rust archives, so they must exist before configure and build, not only before the aggregate task.
 tasks.configureEach { task ->
-  if (task.name.startsWith("externalNativeBuild")) {
+  if (task.name.startsWith("externalNativeBuild") ||
+      task.name.startsWith("configureCMake") ||
+      task.name.startsWith("buildCMake")) {
     task.dependsOn("buildRustLibs")
   }
 }

@@ -7,11 +7,18 @@ set -euo pipefail
 #   rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT_DIR="$SCRIPT_DIR/.."
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 RUST_DIR="$ROOT_DIR/crates/kv-ffi"
-TARGET_DIR="$ROOT_DIR/target"
 OUT_DIR="$ROOT_DIR/ios/Libs"
 HEADER="$ROOT_DIR/cpp/scc_kv_ffi.h"
+STAMP="$OUT_DIR/rust-sources.sha256"
+
+source "$SCRIPT_DIR/rust-stamp.sh"
+handle_mode "${1:-}" "$STAMP" "$OUT_DIR/scc_kv_ffi.xcframework/Info.plist"
+
+TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
+case "$TARGET_DIR" in /*) ;; *) TARGET_DIR="$PWD/$TARGET_DIR" ;; esac
+export CARGO_TARGET_DIR="$TARGET_DIR"
 
 if command -v cbindgen &>/dev/null; then
   echo "==> Generating C header..."
@@ -49,15 +56,16 @@ strip -S "$OUT_DIR/libscc_kv_ffi-ios-sim.a"
 
 echo "  -> Creating xcframework..."
 rm -rf "$OUT_DIR/scc_kv_ffi.xcframework"
-TMPDIR=$(mktemp -d)
-cp "$OUT_DIR/libscc_kv_ffi-ios.a" "$TMPDIR/libscc_kv_ffi.a"
-mkdir -p "$TMPDIR/sim"
-cp "$OUT_DIR/libscc_kv_ffi-ios-sim.a" "$TMPDIR/sim/libscc_kv_ffi.a"
+WORK_DIR=$(mktemp -d)
+cp "$OUT_DIR/libscc_kv_ffi-ios.a" "$WORK_DIR/libscc_kv_ffi.a"
+mkdir -p "$WORK_DIR/sim"
+cp "$OUT_DIR/libscc_kv_ffi-ios-sim.a" "$WORK_DIR/sim/libscc_kv_ffi.a"
 xcodebuild -create-xcframework \
-  -library "$TMPDIR/libscc_kv_ffi.a" \
-  -library "$TMPDIR/sim/libscc_kv_ffi.a" \
+  -library "$WORK_DIR/libscc_kv_ffi.a" \
+  -library "$WORK_DIR/sim/libscc_kv_ffi.a" \
   -output "$OUT_DIR/scc_kv_ffi.xcframework"
-rm -rf "$TMPDIR"
+rm -rf "$WORK_DIR"
+rust_sources_hash > "$STAMP"
 
 echo "==> iOS build complete!"
 echo "    $OUT_DIR/scc_kv_ffi.xcframework"

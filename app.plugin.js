@@ -7,9 +7,7 @@ function getPackageRoot() {
   return path.dirname(pkgJson)
 }
 
-function buildRustIfMissing(libPath, buildScriptName, platform) {
-  if (fs.existsSync(libPath)) return
-
+function buildRustIfNeeded(buildScriptName, platform) {
   let pkgRoot
   try {
     pkgRoot = getPackageRoot()
@@ -21,17 +19,14 @@ function buildRustIfMissing(libPath, buildScriptName, platform) {
   const buildScript = path.join(pkgRoot, 'scripts', buildScriptName)
   if (!fs.existsSync(buildScript)) {
     console.warn(
-      `[react-native-scc-storage] ${platform} Rust libs not found and build script missing.`
+      `[react-native-scc-storage] ${platform} build script missing.`
     )
     return
   }
 
-  console.log(
-    `[react-native-scc-storage] ${platform} Rust libraries not found. Building...`
-  )
-  const { execSync } = require('child_process')
+  const { execFileSync } = require('child_process')
   try {
-    execSync(`bash "${buildScript}"`, { stdio: 'inherit', cwd: pkgRoot })
+    execFileSync('bash', [buildScript, '--if-needed'], { stdio: 'inherit', cwd: pkgRoot })
   } catch {
     console.warn(
       `[react-native-scc-storage] ${platform} Rust build failed. ` +
@@ -44,10 +39,7 @@ function withSccKvIOS(config) {
   return withDangerousMod(config, [
     'ios',
     async (config) => {
-      let pkgRoot
-      try { pkgRoot = getPackageRoot() } catch { return config }
-      const libPath = path.join(pkgRoot, 'ios', 'Libs', 'scc_kv_ffi.xcframework')
-      buildRustIfMissing(libPath, 'build-ios.sh', 'iOS')
+      buildRustIfNeeded('build-ios.sh', 'iOS')
       return config
     },
   ])
@@ -57,10 +49,7 @@ function withSccKvAndroid(config) {
   return withDangerousMod(config, [
     'android',
     async (config) => {
-      let pkgRoot
-      try { pkgRoot = getPackageRoot() } catch { return config }
-      const libPath = path.join(pkgRoot, 'android', 'src', 'main', 'jniLibs', 'arm64-v8a', 'libscc_kv_ffi.a')
-      buildRustIfMissing(libPath, 'build-android.sh', 'Android')
+      buildRustIfNeeded('build-android.sh', 'Android')
       return config
     },
   ])

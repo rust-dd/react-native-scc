@@ -343,8 +343,11 @@ npm run specs            # tsc + nitrogen codegen
 npm test                 # jest (KV + hooks + adapters against a mock native layer)
 cargo test --workspace   # Rust core + FFI suites
 cargo bench -p kv-core   # criterion benchmarks
+npm run check:cpp        # compile-check cpp/ against the Nitro headers
 npm run rust:build       # cross-compile static libs for iOS + Android
 ```
+
+Each native build writes a hash of the Rust sources next to its output. Postinstall, the Expo plugin, `pod install`, the Xcode script phase and the Gradle build all run the build scripts with `--if-needed`, so a checkout rebuilds the libraries after a Rust change instead of linking stale ones, while an npm install with matching prebuilt libraries never needs Rust.
 
 The example app under `example/` runs a full on-device self-test (sync/async round-trips, persistence across launches, cross-handle change events) and the MMKV comparison benchmark with live charts.
 

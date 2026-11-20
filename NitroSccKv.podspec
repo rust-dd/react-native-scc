@@ -10,7 +10,7 @@ Pod::Spec.new do |s|
   s.license      = package["license"]
   s.authors      = package["author"]
 
-  s.platforms    = { :ios => min_ios_version_supported, :visionos => 1.0 }
+  s.platforms    = { :ios => min_ios_version_supported }
   s.source       = { :git => package["repository"]["url"], :tag => "v#{s.version}" }
 
   s.source_files = [
@@ -19,6 +19,13 @@ Pod::Spec.new do |s|
     "cpp/**/*.{hpp,cpp,h}",
   ]
 
+  # vendored_frameworks is resolved at pod install, so a missing or stale build must happen now, not in the script phase.
+  build_script = File.join(__dir__, "scripts", "build-ios.sh")
+  if File.exist?(build_script) && !system("bash", build_script, "--check")
+    unless system({ "PATH" => "#{Dir.home}/.cargo/bin:#{ENV['PATH']}" }, "bash", build_script, "--if-needed")
+      Pod::UI.warn "[react-native-scc-storage] Building the Rust library failed. Run: npm run rust:build:ios"
+    end
+  end
   s.vendored_frameworks = "ios/Libs/scc_kv_ffi.xcframework"
 
   s.pod_target_xcconfig = {
@@ -27,7 +34,7 @@ Pod::Spec.new do |s|
 
   s.script_phase = {
     :name => "Build Rust Library",
-    :script => 'if [ ! -d "${PODS_TARGET_SRCROOT}/ios/Libs/scc_kv_ffi.xcframework" ]; then bash "${PODS_TARGET_SRCROOT}/scripts/build-ios.sh"; fi',
+    :script => 'export PATH="$HOME/.cargo/bin:$PATH"; bash "${PODS_TARGET_SRCROOT}/scripts/build-ios.sh" --if-needed',
     :execution_position => :before_compile,
   }
 

@@ -48,7 +48,9 @@
     "ios/**/*.cpp",
     "ios/**/*.swift",
     "ios/Libs/scc_kv_ffi.xcframework",
+    "ios/Libs/rust-sources.sha256",
     "android/src/main/jniLibs",
+    "android/rust-sources.sha256",
     "crates/kv-core/Cargo.toml",
     "crates/kv-core/src",
     "crates/kv-core/benches",
@@ -67,6 +69,7 @@
   "scripts": {
     "test": "jest",
     "typecheck": "tsc --noEmit",
+    "check:cpp": "bash scripts/check-cpp.sh",
     "typescript": "tsc",
     "specs": "tsc --noEmit false && nitrogen --logLevel=\"debug\"",
     "rust:build:ios": "bash scripts/build-ios.sh",
