@@ -65,8 +65,10 @@ pub(crate) fn stable_scan<T>(map: &ValueMap, mut scan: impl FnMut() -> T) -> T {
     }
 }
 
-/// Removals per lock hold, so a large sweep never stalls writers for long.
+/// Removals per lock hold. std's Mutex is unfair, so sweepers pause between chunks; a bare yield
+/// still let them re-acquire the lock ahead of a waiting writer.
 pub(crate) const SWEEP_CHUNK: usize = 1024;
+pub(crate) const SWEEP_PAUSE: std::time::Duration = std::time::Duration::from_micros(50);
 
 #[derive(Default)]
 pub(crate) struct Doomed {

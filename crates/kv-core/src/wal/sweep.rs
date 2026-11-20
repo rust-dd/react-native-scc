@@ -13,11 +13,13 @@ impl Writer {
             if !self.remove_logged(chunk, |slot| slot.is_expired(now)) {
                 return;
             }
+            std::thread::sleep(crate::SWEEP_PAUSE);
         }
         for chunk in doomed.evicted.chunks(crate::SWEEP_CHUNK) {
             if !self.remove_logged(chunk, |_| true) {
                 return;
             }
+            std::thread::sleep(crate::SWEEP_PAUSE);
         }
     }
 

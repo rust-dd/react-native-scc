@@ -77,18 +77,21 @@ pub(crate) fn spawn(
                             .map(|chunk| (chunk, false)),
                     );
                 for (chunk, expiring) in chunks {
-                    let _mutation = mutation_gate.lock().unwrap();
-                    if stop.load(Ordering::Acquire) || closed.load(Ordering::Acquire) {
-                        return;
-                    }
-                    for key in chunk {
-                        if map
-                            .remove_if_sync(key, |slot| !expiring || slot.is_expired(now))
-                            .is_some()
-                        {
-                            listeners.notify(Some(key.as_str()));
+                    {
+                        let _mutation = mutation_gate.lock().unwrap();
+                        if stop.load(Ordering::Acquire) || closed.load(Ordering::Acquire) {
+                            return;
+                        }
+                        for key in chunk {
+                            if map
+                                .remove_if_sync(key, |slot| !expiring || slot.is_expired(now))
+                                .is_some()
+                            {
+                                listeners.notify(Some(key.as_str()));
+                            }
                         }
                     }
+                    std::thread::sleep(crate::SWEEP_PAUSE);
                 }
             }
         });
