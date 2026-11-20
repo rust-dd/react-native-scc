@@ -59,6 +59,15 @@ function getOptionalPositiveSafeInteger(
   return getPositiveSafeInteger(value, name)
 }
 
+function nullsToUndefined(
+  values: (string | null | undefined)[]
+): (string | undefined)[] {
+  for (let index = 0; index < values.length; index++) {
+    if (values[index] === null) values[index] = undefined
+  }
+  return values as (string | undefined)[]
+}
+
 function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
   return (
     typeof value === 'object' &&
@@ -527,14 +536,7 @@ export class KV {
   set(key: string, value: KVValue, options?: SetOptions): void {
     const fullKey =
       this.keyPrefix === '' ? key : `${this.keyPrefix}${key}`
-    if (options === undefined) {
-      if (typeof value === 'string') this.calls.setString(fullKey, value)
-      else if (typeof value === 'number') this.calls.setNumber(fullKey, value)
-      else if (typeof value === 'boolean') this.calls.setBoolean(fullKey, value)
-      else this.native.setBuffer(fullKey, asBuffer(value))
-      return
-    }
-    const ttl = getTtlMs(options)
+    const ttl = options === undefined ? undefined : getTtlMs(options)
     if (ttl !== undefined) {
       if (typeof value === 'string') this.native.setStringTtl(fullKey, value, ttl)
       else if (typeof value === 'number') this.native.setNumberTtl(fullKey, value, ttl)
@@ -636,11 +638,7 @@ export class KV {
   /** Batch string read; missing keys come back as undefined. */
   getMany(keys: string[]): (string | undefined)[] {
     if (keys.length === 0) return []
-    const values = this.calls.getManyString(this.fullKeys(keys))
-    for (let index = 0; index < values.length; index++) {
-      if (values[index] === null) values[index] = undefined
-    }
-    return values as (string | undefined)[]
+    return nullsToUndefined(this.calls.getManyString(this.fullKeys(keys)))
   }
 
   get size(): number {
@@ -781,12 +779,7 @@ export class KV {
 
   async getManyAsync(keys: string[]): Promise<(string | undefined)[]> {
     if (keys.length === 0) return []
-    const values: (string | null | undefined)[] =
-      await this.native.getManyStringAsync(this.fullKeys(keys))
-    for (let index = 0; index < values.length; index++) {
-      if (values[index] === null) values[index] = undefined
-    }
-    return values as (string | undefined)[]
+    return nullsToUndefined(await this.native.getManyStringAsync(this.fullKeys(keys)))
   }
 
   private fullKey(key: string): string {
