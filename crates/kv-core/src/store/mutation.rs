@@ -143,7 +143,7 @@ impl Store {
                     apply_set(&self.map, key, value.clone(), 0);
                     (key, true)
                 }
-                BatchOp::Delete { key } => (key, self.map.remove_sync(key.as_str()).is_some()),
+                BatchOp::Delete { key } => (key, remove_live(&self.map, key)),
             };
             if collect && changed {
                 notify.push(key.as_str().into());
@@ -163,7 +163,7 @@ impl Store {
                     apply_set_owned(&self.map, key, value, 0);
                 }
                 BatchOp::Delete { key } => {
-                    let changed = self.map.remove_sync(key.as_str()).is_some();
+                    let changed = remove_live(&self.map, &key);
                     if collect && changed {
                         notify.push(key.into());
                     }
@@ -182,7 +182,7 @@ impl Store {
     pub fn delete(&self, key: &str) -> Result<bool> {
         record::validate(&Op::Delete { key })?;
         let existed = self.mutate(|log| {
-            let existed = self.map.remove_sync(key).is_some();
+            let existed = remove_live(&self.map, key);
             if existed && let Some(log) = log {
                 log.append(&Op::Delete { key });
             }
@@ -204,6 +204,12 @@ impl Store {
         self.listeners.notify(None);
         Ok(())
     }
+}
+
+/// Removes `key` either way, but an expired entry was already gone to readers.
+fn remove_live(map: &crate::ValueMap, key: &str) -> bool {
+    map.remove_sync(key)
+        .is_some_and(|(_, slot)| !slot.is_expired(crate::now_ms()))
 }
 
 fn batch_subs(ops: &[BatchOp]) -> Vec<BatchSub<'_>> {

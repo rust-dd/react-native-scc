@@ -66,6 +66,13 @@ function mockMakeInstance(store: FakeStore) {
     })
     store.notify(key)
   }
+  const removeLive = (key: string) => {
+    const entry = store.map.get(key)
+    const live = entry !== undefined && !isExpired(entry)
+    store.map.delete(key)
+    if (live) store.notify(key)
+    return live
+  }
   const instance = {
     setString: (k: string, v: string) => set(k, 0, v),
     setNumber: (k: string, v: number) => set(k, 1, v),
@@ -81,11 +88,7 @@ function mockMakeInstance(store: FakeStore) {
       const entry = store.map.get(k)
       return entry !== undefined && !isExpired(entry)
     },
-    remove: (k: string) => {
-      const existed = store.map.delete(k)
-      if (existed) store.notify(k)
-      return existed
-    },
+    remove: (k: string) => removeLive(k),
     getAllKeys: () =>
       [...store.map.entries()]
         .filter(([, entry]) => !isExpired(entry))
@@ -139,7 +142,7 @@ function mockMakeInstance(store: FakeStore) {
         const key = dec.decode(raw.subarray(off, off + keyLen))
         off += keyLen
         if (kind === 0) {
-          if (store.map.delete(key)) store.notify(key)
+          removeLive(key)
           continue
         }
         if (kind !== 1) throw new Error(`applyBatch: unknown op kind ${kind}`)

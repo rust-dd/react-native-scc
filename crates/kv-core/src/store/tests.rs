@@ -319,3 +319,24 @@ fn close_reports_a_background_write_failure_once() {
     assert!(matches!(s.close(), Err(Error::Background(_))));
     assert!(s.close().is_ok());
 }
+
+#[test]
+fn deleting_an_expired_key_reports_it_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let disk = Store::open(dir.path(), "ttl", fast_opts()).unwrap();
+    for store in [Store::in_memory(), disk] {
+        store.set_with_ttl("a", Value::Num(1.0), 1).unwrap();
+        store.set_with_ttl("b", Value::Num(1.0), 1).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        let events = Arc::new(Mutex::new(0usize));
+        let sink = events.clone();
+        store.subscribe(move |_| *sink.lock().unwrap() += 1);
+
+        assert!(!store.delete("a").unwrap());
+        store
+            .apply_batch_owned(vec![BatchOp::Delete { key: "b".into() }])
+            .unwrap();
+        assert_eq!(*events.lock().unwrap(), 0);
+        store.close().unwrap();
+    }
+}
