@@ -410,3 +410,62 @@ fn large_encrypted_values_do_not_presize_a_huge_table() {
     assert!(store.map.capacity() < 1024, "{}", store.map.capacity());
     store.close().unwrap();
 }
+
+#[test]
+fn eviction_across_several_chunks_removes_and_reports_every_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let opts = OpenOptions {
+        max_entries: Some(100),
+        ttl_sweep_interval: Duration::from_millis(20),
+        ..fast_opts()
+    };
+    let disk = Store::open(dir.path(), "evict", opts).unwrap();
+    let memory = Store::in_memory_evicting(Some(100), Duration::from_millis(20)).unwrap();
+    for store in [disk, memory] {
+        let removed = Arc::new(Mutex::new(0usize));
+        let sink = removed.clone();
+        let keys = (0..5000).map(|i| format!("k{i}")).collect::<Vec<_>>();
+        store
+            .set_many(keys.iter().map(|k| (k.as_str(), Value::Num(1.0))))
+            .unwrap();
+        store.subscribe(move |_| *sink.lock().unwrap() += 1);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while store.len() > 100 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "eviction stalled at {}",
+                store.len()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(store.len(), 100);
+        assert_eq!(*removed.lock().unwrap(), 4900);
+        store.close().unwrap();
+    }
+}
+
+#[test]
+fn ttl_keys_loaded_from_disk_are_swept() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path(), "reload", fast_opts()).unwrap();
+    store.set("keep", Value::Num(1.0)).unwrap();
+    store.set_with_ttl("gone", Value::Num(1.0), 1).unwrap();
+    store.close().unwrap();
+    std::thread::sleep(Duration::from_millis(5));
+
+    let opts = OpenOptions {
+        ttl_sweep_interval: Duration::from_millis(20),
+        ..fast_opts()
+    };
+    let reopened = Store::open(dir.path(), "reload", opts).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while reopened.map.len() > 1 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "expired key never swept"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    reopened.close().unwrap();
+}

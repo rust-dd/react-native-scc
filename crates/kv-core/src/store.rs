@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock};
 use std::time::Duration;
 
@@ -63,6 +63,7 @@ pub struct Store {
     sweeper: Option<crate::sweeper::SweeperHandle>,
     ttl_sweeper: OnceLock<crate::sweeper::SweeperHandle>,
     ttl_sweep_interval: Duration,
+    ttl_epoch: Arc<AtomicU64>,
     /// Read side of the compaction gate: multi-op batches hold it across map
     /// application + WAL append so the writer's compact() (write side) can
     /// never snapshot a half-applied batch and truncate its record away.
@@ -104,6 +105,7 @@ impl Store {
             sweeper: None,
             ttl_sweeper: OnceLock::new(),
             ttl_sweep_interval: interval,
+            ttl_epoch: Arc::new(AtomicU64::new(0)),
             compact_gate: Arc::new(RwLock::new(())),
             mutation_gate: None,
             ungated_mutations: AtomicUsize::new(0),
@@ -122,6 +124,7 @@ impl Store {
         let listeners = Arc::new(Listeners::new());
         let closed = Arc::new(AtomicBool::new(false));
         let mutation_gate = Arc::new(Mutex::new(()));
+        let ttl_epoch = Arc::new(AtomicU64::new(0));
         let sweeper = crate::sweeper::spawn(
             map.clone(),
             listeners.clone(),
@@ -129,6 +132,7 @@ impl Store {
             sweep_interval,
             mutation_gate.clone(),
             closed.clone(),
+            ttl_epoch.clone(),
         )?;
         Ok(Arc::new(Store {
             map,
@@ -138,6 +142,7 @@ impl Store {
             sweeper: Some(sweeper),
             ttl_sweeper: OnceLock::new(),
             ttl_sweep_interval: sweep_interval,
+            ttl_epoch,
             compact_gate: Arc::new(RwLock::new(())),
             mutation_gate: Some(mutation_gate),
             ungated_mutations: AtomicUsize::new(0),
@@ -181,6 +186,7 @@ impl Store {
         // A temporary reservation, unlike with_capacity, lets the table shrink once keys are deleted.
         let reserved = map.reserve(snapshot::capacity_hint(&snap_path)?);
         let compact_gate = Arc::new(RwLock::new(()));
+        let ttl_epoch = Arc::new(AtomicU64::new(0));
         let snap_len = snapshot::load(&snap_path, &map, cipher.as_deref())?;
         let snapshot_verified_key = snap_len > crate::crypto::HEADER_LEN as u64;
         let wal_len = replay_wal(&wal_path, &map, cipher.as_deref(), snapshot_verified_key)?;
@@ -200,6 +206,7 @@ impl Store {
                 sweep_interval: opts.ttl_sweep_interval,
                 max_entries: opts.max_entries,
                 compact_gate: compact_gate.clone(),
+                ttl_epoch: ttl_epoch.clone(),
             },
             map.clone(),
             wal_len,
@@ -213,6 +220,7 @@ impl Store {
             sweeper: None,
             ttl_sweeper: OnceLock::new(),
             ttl_sweep_interval: opts.ttl_sweep_interval,
+            ttl_epoch,
             compact_gate,
             mutation_gate: None,
             ungated_mutations: AtomicUsize::new(0),
@@ -379,6 +387,7 @@ impl Store {
             self.ttl_sweep_interval,
             Arc::new(Mutex::new(())),
             self.closed.clone(),
+            self.ttl_epoch.clone(),
         ) {
             let _ = self.ttl_sweeper.set(sweeper);
         }

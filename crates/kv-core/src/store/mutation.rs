@@ -66,6 +66,8 @@ impl Store {
             self.ensure_ttl_sweeper();
             apply_set(&self.map, key, value, expires_at_ms);
         })?;
+        self.ttl_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
         self.listeners.notify(Some(key));
         Ok(())
     }

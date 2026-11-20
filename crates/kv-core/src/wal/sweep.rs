@@ -1,34 +1,40 @@
-use crate::record::Op;
+use compact_str::CompactString;
 
 use super::writer::{Writer, take_logged};
+use crate::record::Op;
 
 impl Writer {
     pub(super) fn sweep_and_evict(&mut self) {
         let now = crate::now_ms();
-        let (expired, evicted) = crate::compute_doomed(&self.map, now, self.cfg.max_entries);
-        if expired.is_empty() && evicted.is_empty() {
-            return;
+        let doomed =
+            self.ttl_scan
+                .doomed(&self.map, &self.cfg.ttl_epoch, self.cfg.max_entries, now);
+        for chunk in doomed.expired.chunks(crate::SWEEP_CHUNK) {
+            if !self.remove_logged(chunk, |slot| slot.is_expired(now)) {
+                return;
+            }
         }
+        for chunk in doomed.evicted.chunks(crate::SWEEP_CHUNK) {
+            if !self.remove_logged(chunk, |_| true) {
+                return;
+            }
+        }
+    }
+
+    fn remove_logged(
+        &mut self,
+        keys: &[CompactString],
+        doomed: impl Fn(&crate::Slot) -> bool,
+    ) -> bool {
         let mut removed = Vec::new();
         {
             let mut log = self.shared.log.lock().unwrap();
             if log.closed {
-                return;
+                return false;
             }
-            for key in expired {
-                // The entry may have been rewritten after the scan.
-                if self
-                    .map
-                    .remove_if_sync(&key, |slot| slot.is_expired(now))
-                    .is_some()
-                {
-                    log.append(&Op::Delete { key: &key });
-                    removed.push(key);
-                }
-            }
-            for key in evicted {
-                if self.map.remove_sync(&key).is_some() {
-                    log.append(&Op::Delete { key: &key });
+            for key in keys {
+                if self.map.remove_if_sync(key, |slot| doomed(slot)).is_some() {
+                    log.append(&Op::Delete { key });
                     removed.push(key);
                 }
             }
@@ -37,5 +43,6 @@ impl Writer {
         for key in removed {
             self.cfg.listeners.notify(Some(key.as_str()));
         }
+        true
     }
 }

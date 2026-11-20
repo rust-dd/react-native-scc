@@ -39,6 +39,7 @@ pub(crate) struct WriterConfig {
     pub sweep_interval: Duration,
     pub max_entries: Option<usize>,
     pub compact_gate: Arc<RwLock<()>>,
+    pub ttl_epoch: Arc<std::sync::atomic::AtomicU64>,
 }
 
 type FlushAck = Sender<std::result::Result<(), String>>;

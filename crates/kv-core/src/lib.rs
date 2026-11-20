@@ -54,42 +54,84 @@ pub(crate) fn new_value_map() -> ValueMap {
     ValueMap::with_hasher(FastState::default())
 }
 
-/// Selects keys to reclaim in one sweep, split by why they are doomed:
-/// `expired` keys (capped at 4096 per pass) must be re-checked for expiry at
-/// removal time — a concurrent rewrite makes them live again — while `evicted`
-/// keys are arbitrary live keys removed to fit `max_entries`. The live count
-/// is exact (a full scan when tracking), so the 4096 expired-cap never
-/// inflates the eviction target.
+/// Removals per lock hold, so a large sweep never stalls writers for long.
+pub(crate) const SWEEP_CHUNK: usize = 1024;
+
+#[derive(Default)]
+pub(crate) struct Doomed {
+    /// Re-check expiry at removal time: a concurrent rewrite makes the key live again.
+    pub expired: Vec<CompactString>,
+    pub evicted: Vec<CompactString>,
+    pub saw_ttl: bool,
+}
+
+/// Selects keys to reclaim in one sweep. Expired keys are capped at 4096 per
+/// pass; the live count stays exact so the cap never inflates eviction.
+/// `ttl_free` means no slot can expire, which skips the scan entirely.
 pub(crate) fn compute_doomed(
     map: &ValueMap,
     now: u64,
     max_entries: Option<usize>,
-) -> (Vec<CompactString>, Vec<CompactString>) {
-    let track_live = max_entries.is_some();
-    let mut expired: Vec<CompactString> = Vec::new();
-    let mut live: usize = 0;
-    map.iter_sync(|k, slot| {
-        if slot.is_expired(now) {
-            if expired.len() < 4096 {
-                expired.push(k.clone());
-            }
-        } else if track_live {
-            live += 1;
+    ttl_free: bool,
+) -> Doomed {
+    let mut doomed = Doomed::default();
+    let live = if ttl_free {
+        if max_entries.is_none() {
+            return doomed;
         }
-        track_live || expired.len() < 4096
-    });
-    let mut evicted: Vec<CompactString> = Vec::new();
+        map.len()
+    } else {
+        let track_live = max_entries.is_some();
+        let mut live: usize = 0;
+        map.iter_sync(|k, slot| {
+            doomed.saw_ttl |= slot.expires_at_ms != 0;
+            if slot.is_expired(now) {
+                if doomed.expired.len() < 4096 {
+                    doomed.expired.push(k.clone());
+                }
+            } else if track_live {
+                live += 1;
+            }
+            track_live || doomed.expired.len() < 4096
+        });
+        live
+    };
     if let Some(max) = max_entries
         && live > max
     {
         let mut need = live - max;
         map.iter_sync(|k, slot| {
             if !slot.is_expired(now) {
-                evicted.push(k.clone());
+                doomed.evicted.push(k.clone());
                 need -= 1;
             }
             need > 0
         });
     }
-    (expired, evicted)
+    doomed
+}
+
+/// Tracks when a full scan last found no expiring slot. TTL writers bump the
+/// epoch after inserting, so a scan that read the old epoch is never trusted.
+#[derive(Default)]
+pub(crate) struct TtlScan {
+    ttl_free_at: Option<u64>,
+}
+
+impl TtlScan {
+    pub(crate) fn doomed(
+        &mut self,
+        map: &ValueMap,
+        epoch: &std::sync::atomic::AtomicU64,
+        max_entries: Option<usize>,
+        now: u64,
+    ) -> Doomed {
+        let at = epoch.load(std::sync::atomic::Ordering::Acquire);
+        let ttl_free = self.ttl_free_at == Some(at);
+        let doomed = compute_doomed(map, now, max_entries, ttl_free);
+        if !ttl_free {
+            self.ttl_free_at = (!doomed.saw_ttl).then_some(at);
+        }
+        doomed
+    }
 }

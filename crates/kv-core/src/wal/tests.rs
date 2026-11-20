@@ -21,6 +21,7 @@ fn test_cfg(dir: &std::path::Path) -> WriterConfig {
         sweep_interval: Duration::from_secs(3600),
         max_entries: None,
         compact_gate: Arc::new(RwLock::new(())),
+        ttl_epoch: Arc::default(),
     }
 }
 

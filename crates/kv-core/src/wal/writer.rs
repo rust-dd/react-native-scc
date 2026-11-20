@@ -24,6 +24,7 @@ pub(super) struct Writer {
     pub(super) last_sync: Instant,
     last_sweep: Instant,
     pub(super) dirty: bool,
+    pub(super) ttl_scan: crate::TtlScan,
 }
 
 impl Writer {
@@ -49,6 +50,7 @@ impl Writer {
             last_sync: now,
             last_sweep: now,
             dirty: false,
+            ttl_scan: crate::TtlScan::default(),
         }
     }
 

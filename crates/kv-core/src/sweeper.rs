@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -52,42 +52,50 @@ pub(crate) fn spawn(
     sweep_interval: Duration,
     mutation_gate: Arc<Mutex<()>>,
     closed: Arc<AtomicBool>,
+    ttl_epoch: Arc<AtomicU64>,
 ) -> Result<SweeperHandle> {
     let shutdown = Arc::new(AtomicBool::new(false));
     let stop = shutdown.clone();
     let spawned = std::thread::Builder::new()
         .name("kv-core-sweeper".into())
         .spawn(move || {
+            let mut scan = crate::TtlScan::default();
             loop {
                 std::thread::park_timeout(sweep_interval);
                 if stop.load(Ordering::Acquire) {
                     break;
                 }
                 let now = crate::now_ms();
-                let (expired, evicted) = crate::compute_doomed(&map, now, max_entries);
-                let mut removed = Vec::new();
-                {
-                    let _mutation = mutation_gate.lock().unwrap();
-                    if stop.load(Ordering::Acquire) || closed.load(Ordering::Acquire) {
-                        break;
-                    }
-                    for key in expired {
-                        // The entry may have been rewritten after the scan.
-                        if map
-                            .remove_if_sync(&key, |slot| slot.is_expired(now))
-                            .is_some()
-                        {
-                            removed.push(key);
+                let doomed = scan.doomed(&map, &ttl_epoch, max_entries, now);
+                let chunks = doomed
+                    .expired
+                    .chunks(crate::SWEEP_CHUNK)
+                    .map(|chunk| (chunk, true))
+                    .chain(
+                        doomed
+                            .evicted
+                            .chunks(crate::SWEEP_CHUNK)
+                            .map(|chunk| (chunk, false)),
+                    );
+                for (chunk, expiring) in chunks {
+                    let mut removed = Vec::new();
+                    {
+                        let _mutation = mutation_gate.lock().unwrap();
+                        if stop.load(Ordering::Acquire) || closed.load(Ordering::Acquire) {
+                            return;
+                        }
+                        for key in chunk {
+                            if map
+                                .remove_if_sync(key, |slot| !expiring || slot.is_expired(now))
+                                .is_some()
+                            {
+                                removed.push(key);
+                            }
                         }
                     }
-                    for key in evicted {
-                        if map.remove_sync(&key).is_some() {
-                            removed.push(key);
-                        }
+                    for key in removed {
+                        listeners.notify(Some(key.as_str()));
                     }
-                }
-                for key in removed {
-                    listeners.notify(Some(key.as_str()));
                 }
             }
         });
@@ -114,6 +122,24 @@ mod tests {
         }
         std::thread::sleep(Duration::from_millis(250));
         assert!(s.len() <= 2, "expected <= 2 live, got {}", s.len());
+    }
+
+    #[test]
+    fn ttl_scan_skips_until_the_epoch_moves() {
+        let map = crate::new_value_map();
+        let _ = map.insert_sync("plain".into(), crate::slot(Value::Num(1.0)));
+        let epoch = AtomicU64::new(0);
+        let mut scan = crate::TtlScan::default();
+        assert!(scan.doomed(&map, &epoch, None, 10).expired.is_empty());
+
+        let expiring = crate::Slot {
+            value: Value::Num(1.0),
+            expires_at_ms: 5,
+        };
+        let _ = map.insert_sync("ttl".into(), expiring);
+        assert!(scan.doomed(&map, &epoch, None, 10).expired.is_empty());
+        epoch.fetch_add(1, Ordering::Release);
+        assert_eq!(scan.doomed(&map, &epoch, None, 10).expired.len(), 1);
     }
 
     #[test]
