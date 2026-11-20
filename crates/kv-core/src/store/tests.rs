@@ -498,3 +498,49 @@ fn prefix_queries_and_deletes_see_only_live_matching_keys() {
         store.close().unwrap();
     }
 }
+
+#[test]
+fn keys_never_repeat_while_the_table_resizes() {
+    let store = Store::in_memory();
+    let writer = {
+        let store = store.clone();
+        std::thread::spawn(move || {
+            for i in 0..1_000_000 {
+                store.set(&format!("k{i}"), Value::Num(1.0)).unwrap();
+            }
+        })
+    };
+    let mut repeats = 0;
+    while !writer.is_finished() {
+        let mut keys = store.keys();
+        let seen = keys.len();
+        keys.sort_unstable();
+        keys.dedup();
+        repeats += seen - keys.len();
+    }
+    writer.join().unwrap();
+    assert_eq!(repeats, 0);
+    assert_eq!(store.len(), 1_000_000);
+}
+
+#[test]
+fn change_events_follow_write_order_across_threads() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path(), "order", fast_opts()).unwrap();
+    for _ in 0..5000 {
+        let events = Arc::new(Mutex::new(Vec::<Option<String>>::new()));
+        let sink = events.clone();
+        let id = store.subscribe(move |key| sink.lock().unwrap().push(key.map(str::to_string)));
+        let clearer = {
+            let store = store.clone();
+            std::thread::spawn(move || store.clear().map(|_| ()))
+        };
+        store.set("x", Value::Num(1.0)).unwrap();
+        clearer.join().unwrap().unwrap();
+        store.unsubscribe(id);
+        let last = events.lock().unwrap().last().cloned().flatten();
+        assert_eq!(store.contains("x"), last.as_deref() == Some("x"));
+        store.clear().unwrap();
+    }
+    store.close().unwrap();
+}

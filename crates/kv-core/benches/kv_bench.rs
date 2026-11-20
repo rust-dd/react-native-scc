@@ -63,6 +63,17 @@ fn bench_set(c: &mut Criterion) {
         })
     });
 
+    let listener = store.subscribe(|_| {});
+    c.bench_function("set/overwrite_str64/wal/1_listener", |b| {
+        b.iter(|| {
+            i = (i + 1) & 1023;
+            store
+                .set(&keys[i], Value::Str(payload.clone().into()))
+                .unwrap()
+        })
+    });
+    store.unsubscribe(listener);
+
     let mut n = 0u64;
     c.bench_function("set/insert_str64/wal", |b| {
         b.iter(|| {

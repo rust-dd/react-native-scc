@@ -6,6 +6,8 @@ use crate::record::{self, BatchSub, Op};
 use crate::value::Value;
 use crate::wal::Log;
 
+// Listeners are notified inside each mutation, under the same lock as the write, so events
+// from different threads arrive in write order.
 impl Store {
     fn mutate<R>(&self, f: impl FnOnce(Option<&mut Log>) -> R) -> Result<R> {
         match &self.wal {
@@ -29,9 +31,8 @@ impl Store {
                 log.append(&Op::Set { key, value: &value });
             }
             apply_set(&self.map, key, value, 0);
-        })?;
-        self.listeners.notify(Some(key));
-        Ok(())
+            self.listeners.notify(Some(key));
+        })
     }
 
     pub fn set_str(&self, key: &str, value: &str) -> Result<()> {
@@ -41,9 +42,8 @@ impl Store {
                 log.append(&Op::SetStr { key, value });
             }
             apply_set_str(&self.map, key, value);
-        })?;
-        self.listeners.notify(Some(key));
-        Ok(())
+            self.listeners.notify(Some(key));
+        })
     }
 
     /// Like `set`, but the key expires `ttl_ms` from now. Expired keys read
@@ -65,11 +65,10 @@ impl Store {
             }
             self.ensure_ttl_sweeper();
             apply_set(&self.map, key, value, expires_at_ms);
-        })?;
-        self.ttl_epoch
-            .fetch_add(1, std::sync::atomic::Ordering::Release);
-        self.listeners.notify(Some(key));
-        Ok(())
+            self.ttl_epoch
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
+            self.listeners.notify(Some(key));
+        })
     }
 
     /// Listeners fire per key; unlike `apply_batch`, recovery may keep only a prefix.
@@ -78,22 +77,22 @@ impl Store {
         for (key, value) in &entries {
             record::validate(&Op::Set { key, value })?;
         }
-        let collect_keys = self.listeners.is_active();
-        let notify_keys = self.mutate_atomically(|mut log| {
-            let mut notify_keys = Vec::<CompactString>::new();
+        self.mutate_atomically(|mut log| {
+            let collect_keys = self.listeners.is_active();
+            let mut notify_keys = Vec::<&str>::new();
             for (key, value) in entries {
                 if let Some(log) = log.as_deref_mut() {
                     log.append(&Op::Set { key, value: &value });
                 }
                 apply_set(&self.map, key, value, 0);
                 if collect_keys {
-                    notify_keys.push(key.into());
+                    notify_keys.push(key);
                 }
             }
-            notify_keys
-        })?;
-        self.notify_keys(&notify_keys);
-        Ok(())
+            for key in notify_keys {
+                self.listeners.notify(Some(key));
+            }
+        })
     }
 
     /// Applies `ops` as one crash-atomic unit; clones into the owned path that production uses.
@@ -109,17 +108,15 @@ impl Store {
         record::validate(&Op::Batch {
             ops: &batch_subs(&ops),
         })?;
-        let collect_keys = self.listeners.is_active();
-        let notify_keys = self.mutate_atomically(|log| {
+        self.mutate_atomically(|log| {
             if let Some(log) = log {
                 log.append(&Op::Batch {
                     ops: &batch_subs(&ops),
                 });
             }
-            self.apply_ops_owned(ops, collect_keys)
-        })?;
-        self.notify_keys(&notify_keys);
-        Ok(())
+            let changed = self.apply_ops_owned(ops, self.listeners.is_active());
+            self.notify_keys(&changed);
+        })
     }
 
     fn apply_ops_owned(&self, ops: Vec<BatchOp>, collect: bool) -> Vec<CompactString> {
@@ -151,23 +148,22 @@ impl Store {
 
     pub fn delete(&self, key: &str) -> Result<bool> {
         record::validate(&Op::Delete { key })?;
-        let existed = self.mutate(|log| {
+        self.mutate(|log| {
             let existed = remove_live(&self.map, key);
-            if existed && let Some(log) = log {
-                log.append(&Op::Delete { key });
+            if existed {
+                if let Some(log) = log {
+                    log.append(&Op::Delete { key });
+                }
+                self.listeners.notify(Some(key));
             }
             existed
-        })?;
-        if existed {
-            self.listeners.notify(Some(key));
-        }
-        Ok(existed)
+        })
     }
 
     /// Returns how many live keys it removed, counted in the same pass.
     pub fn clear(&self) -> Result<usize> {
         let now = crate::now_ms();
-        let removed = self.mutate(|log| {
+        self.mutate(|log| {
             let mut live = 0usize;
             self.map.retain_sync(|_, slot| {
                 live += usize::from(!slot.is_expired(now));
@@ -176,10 +172,9 @@ impl Store {
             if let Some(log) = log {
                 log.append(&Op::Clear);
             }
+            self.listeners.notify(None);
             live
-        })?;
-        self.listeners.notify(None);
-        Ok(removed)
+        })
     }
 
     /// Deletes the keys matching `prefix` at scan time as one crash-atomic batch.
@@ -195,23 +190,24 @@ impl Store {
         record::validate(&Op::Batch {
             ops: &batch_subs(&ops),
         })?;
-        let removed = self.mutate_atomically(|log| {
+        self.mutate_atomically(|log| {
             if let Some(log) = log {
                 log.append(&Op::Batch {
                     ops: &batch_subs(&ops),
                 });
             }
-            ops.iter()
+            let removed = ops
+                .iter()
                 .filter_map(|op| match op {
                     BatchOp::Delete { key } if remove_live(&self.map, key) => {
                         Some(CompactString::from(key.as_str()))
                     }
                     _ => None,
                 })
-                .collect::<Vec<_>>()
-        })?;
-        self.notify_keys(&removed);
-        Ok(removed.len())
+                .collect::<Vec<_>>();
+            self.notify_keys(&removed);
+            removed.len()
+        })
     }
 }
 

@@ -290,14 +290,16 @@ impl Store {
 
     pub fn keys_with_prefix(&self, prefix: &str) -> Vec<String> {
         let now = crate::now_ms();
-        let mut out = Vec::new();
-        self.map.iter_sync(|k, slot| {
-            if k.starts_with(prefix) && !slot.is_expired(now) {
-                out.push(k.to_string());
-            }
-            true
-        });
-        out
+        crate::stable_scan(&self.map, || {
+            let mut out = Vec::new();
+            self.map.iter_sync(|k, slot| {
+                if k.starts_with(prefix) && !slot.is_expired(now) {
+                    out.push(k.to_string());
+                }
+                true
+            });
+            out
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -306,20 +308,23 @@ impl Store {
 
     pub fn count_with_prefix(&self, prefix: &str) -> usize {
         let now = crate::now_ms();
-        let mut len = 0;
-        self.map.iter_sync(|k, slot| {
-            if k.starts_with(prefix) && !slot.is_expired(now) {
-                len += 1;
-            }
-            true
-        });
-        len
+        crate::stable_scan(&self.map, || {
+            let mut len = 0;
+            self.map.iter_sync(|k, slot| {
+                if k.starts_with(prefix) && !slot.is_expired(now) {
+                    len += 1;
+                }
+                true
+            });
+            len
+        })
     }
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
+    /// Listeners run in write order under the store's write lock, so they must not mutate the store.
     pub fn subscribe(&self, f: impl Fn(Option<&str>) + Send + Sync + 'static) -> u64 {
         self.listeners.add(Box::new(f))
     }

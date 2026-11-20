@@ -54,6 +54,17 @@ pub(crate) fn new_value_map() -> ValueMap {
     ValueMap::with_hasher(FastState::default())
 }
 
+/// scc may visit an entry twice when the table resizes mid-scan, so retry until the capacity holds still.
+pub(crate) fn stable_scan<T>(map: &ValueMap, mut scan: impl FnMut() -> T) -> T {
+    loop {
+        let capacity = map.capacity();
+        let out = scan();
+        if map.capacity() == capacity {
+            return out;
+        }
+    }
+}
+
 /// Removals per lock hold, so a large sweep never stalls writers for long.
 pub(crate) const SWEEP_CHUNK: usize = 1024;
 
@@ -127,7 +138,7 @@ impl TtlScan {
     ) -> Doomed {
         let at = epoch.load(std::sync::atomic::Ordering::Acquire);
         let ttl_free = self.ttl_free_at == Some(at);
-        let doomed = compute_doomed(map, now, max_entries, ttl_free);
+        let doomed = stable_scan(map, || compute_doomed(map, now, max_entries, ttl_free));
         if !ttl_free {
             self.ttl_free_at = (!doomed.saw_ttl).then_some(at);
         }

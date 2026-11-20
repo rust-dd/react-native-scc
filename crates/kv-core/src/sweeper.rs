@@ -77,23 +77,17 @@ pub(crate) fn spawn(
                             .map(|chunk| (chunk, false)),
                     );
                 for (chunk, expiring) in chunks {
-                    let mut removed = Vec::new();
-                    {
-                        let _mutation = mutation_gate.lock().unwrap();
-                        if stop.load(Ordering::Acquire) || closed.load(Ordering::Acquire) {
-                            return;
-                        }
-                        for key in chunk {
-                            if map
-                                .remove_if_sync(key, |slot| !expiring || slot.is_expired(now))
-                                .is_some()
-                            {
-                                removed.push(key);
-                            }
-                        }
+                    let _mutation = mutation_gate.lock().unwrap();
+                    if stop.load(Ordering::Acquire) || closed.load(Ordering::Acquire) {
+                        return;
                     }
-                    for key in removed {
-                        listeners.notify(Some(key.as_str()));
+                    for key in chunk {
+                        if map
+                            .remove_if_sync(key, |slot| !expiring || slot.is_expired(now))
+                            .is_some()
+                        {
+                            listeners.notify(Some(key.as_str()));
+                        }
                     }
                 }
             }
