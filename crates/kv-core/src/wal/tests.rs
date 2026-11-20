@@ -334,3 +334,49 @@ fn compaction_logs_queued_batches_before_the_snapshot_replaces_them() {
     );
     recovered.close().unwrap();
 }
+
+#[test]
+fn writes_admitted_during_capture_survive_both_compaction_crash_points() {
+    for crash_after_snapshot in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let opts = crate::OpenOptions {
+            compact_min: u64::MAX,
+            ..crate::OpenOptions::default()
+        };
+        let store = crate::Store::open(dir.path(), "cap", opts).unwrap();
+        store.set("x", Value::Num(0.0)).unwrap();
+        store.flush().unwrap();
+        let wal = store.wal_for_test().unwrap();
+        wal.hooks().hold_writes.store(true, Ordering::Release);
+        let late = store.clone();
+        *wal.hooks().after_capture.lock().unwrap() = Some(Box::new(move || {
+            late.set("x", Value::Num(1.0)).unwrap();
+            late.set("y", Value::Num(1.0)).unwrap();
+        }));
+        wal.hooks()
+            .crash_after_snapshot
+            .store(crash_after_snapshot, Ordering::Release);
+        wal.hooks().compact_now.store(true, Ordering::Release);
+        wal.wake();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !wal.hooks().crashed.load(Ordering::Acquire)
+            && wal.hooks().compactions.load(Ordering::Acquire) == 0
+        {
+            assert!(Instant::now() < deadline, "compaction never ran");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let crashed = tempfile::tempdir().unwrap();
+        for name in ["cap.snap", "cap.wal"] {
+            std::fs::copy(dir.path().join(name), crashed.path().join(name)).unwrap();
+        }
+        store.close().unwrap();
+        let recovered =
+            crate::Store::open(crashed.path(), "cap", crate::OpenOptions::default()).unwrap();
+        assert_eq!(
+            (recovered.get("x"), recovered.get("y")),
+            (Some(Value::Num(1.0)), Some(Value::Num(1.0))),
+            "crash_after_snapshot: {crash_after_snapshot}"
+        );
+        recovered.close().unwrap();
+    }
+}

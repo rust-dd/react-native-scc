@@ -84,6 +84,8 @@ pub(crate) struct TestHooks {
     pub compact_now: AtomicBool,
     pub crash_after_snapshot: AtomicBool,
     pub crashed: AtomicBool,
+    pub after_capture: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    pub compactions: std::sync::atomic::AtomicUsize,
 }
 
 pub(crate) struct WalHandle {

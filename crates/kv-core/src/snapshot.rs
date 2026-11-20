@@ -78,12 +78,16 @@ fn persist_impl(
     file.sync_all().map_err(|e| io_err(&tmp, e))?;
     drop(file);
     fs::rename(&tmp, path).map_err(|e| io_err(path, e))?;
+    sync_parent(path);
+    Ok(header.len() as u64 + body_len)
+}
+
+pub(crate) fn sync_parent(path: &Path) {
     if let Some(dir) = path.parent()
         && let Ok(d) = fs::File::open(dir)
     {
         let _ = d.sync_all();
     }
-    Ok(header.len() as u64 + body_len)
 }
 
 fn write_encrypted_records(
