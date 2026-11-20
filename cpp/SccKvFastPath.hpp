@@ -1,5 +1,6 @@
 #pragma once
 
+#include "SccKvCommon.hpp"
 #include "scc_kv_ffi.h"
 
 #include <jsi/jsi.h>
@@ -85,22 +86,17 @@ inline void appendField(jsi::Runtime& rt, const jsi::Value& value, std::string& 
   }
 }
 
-inline const uint8_t* bytes(const std::string& text) {
-  return reinterpret_cast<const uint8_t*>(text.data());
-}
+using common::bytes;
 
 [[noreturn]] inline void throwLastError(jsi::Runtime& rt, const char* op) {
-  char* err = scc_kv_last_error();
-  std::string message = err != nullptr ? err : "unknown error";
-  if (err != nullptr) scc_kv_free_cstring(err);
-  throw jsi::JSError(rt, std::string(op) + " failed: " + message);
+  throw jsi::JSError(rt, common::lastError(op));
 }
 
 inline void expectArguments(jsi::Runtime& rt, size_t count, size_t expected) {
   if (count < expected) throw jsi::JSError(rt, "missing arguments");
 }
 
-constexpr size_t maxRetainedCapacity = 256 * 1024;
+using common::maxRetainedCapacity;
 
 inline void trimRetained(std::string& buffer) {
   if (buffer.capacity() > maxRetainedCapacity) std::string().swap(buffer);
@@ -118,26 +114,11 @@ inline std::string& valueBuffer() {
 
 inline jsi::Value getStringLike(jsi::Runtime& rt, SccKvStore* handle, const std::string& key,
                                 uint8_t tag) {
-  static thread_local std::vector<uint8_t> scratch(4096);
-  std::vector<uint8_t> oversized;
-  std::vector<uint8_t>* buffer = &scratch;
-  while (true) {
-    size_t needed = 0;
-    int rc = scc_kv_get_raw(handle, bytes(key), key.size(), tag, buffer->data(), buffer->size(),
-                            &needed);
-    if (rc < 0) throwLastError(rt, "get");
-    if (rc == 0) return jsi::Value::undefined();
-    if (needed <= buffer->size()) {
-      return jsi::String::createFromUtf8(rt, buffer->data(), needed);
-    }
-    if (needed <= maxRetainedCapacity) {
-      scratch.resize(needed);
-      buffer = &scratch;
-    } else {
-      oversized.resize(needed);
-      buffer = &oversized;
-    }
-  }
+  auto value = common::readStringLike(
+      handle, key, tag, [&rt](const char* op) { throwLastError(rt, op); },
+      [&rt](const uint8_t* data, size_t len) { return jsi::String::createFromUtf8(rt, data, len); });
+  if (!value.has_value()) return jsi::Value::undefined();
+  return jsi::Value(std::move(*value));
 }
 
 // `owner` keeps the handle alive while JS holds any of these functions.

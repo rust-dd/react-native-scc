@@ -1,6 +1,7 @@
 #pragma once
 
 #include "HybridSccKvInstanceSpec.hpp"
+#include "SccKvCommon.hpp"
 #include "SccKvFastPath.hpp"
 #include "scc_kv_ffi.h"
 
@@ -492,20 +493,18 @@ private:
       return {};
     }
     std::vector<std::string> keys;
-    size_t off = 0;
-    while (off + 4 <= len) {
-      uint32_t n = readU32Le(data + off);
-      off += 4;
-      if (off + n > len) break;
-      keys.emplace_back(reinterpret_cast<const char*>(data + off), n);
-      off += n;
+    try {
+      keys = common::unpackKeys(data, len, op);
+    } catch (...) {
+      scc_kv_free(data, len);
+      throw;
     }
     scc_kv_free(data, len);
     return keys;
   }
 
   static const uint8_t* kptr(const std::string& s) {
-    return reinterpret_cast<const uint8_t*>(s.data());
+    return common::bytes(s);
   }
 
   static void writeU32Le(uint8_t* out, uint32_t value) {
@@ -516,17 +515,11 @@ private:
   }
 
   static uint32_t readU32Le(const uint8_t* data) {
-    return static_cast<uint32_t>(data[0]) |
-           (static_cast<uint32_t>(data[1]) << 8) |
-           (static_cast<uint32_t>(data[2]) << 16) |
-           (static_cast<uint32_t>(data[3]) << 24);
+    return common::readU32Le(data);
   }
 
   [[noreturn]] static void throwLastError(const char* op) {
-    char* err = scc_kv_last_error();
-    std::string msg = err != nullptr ? err : "unknown error";
-    if (err != nullptr) scc_kv_free_cstring(err);
-    throw std::runtime_error(std::string(op) + " failed: " + msg);
+    common::throwLastError(op);
   }
 
   void setRaw(const std::string& key, uint8_t tag, const uint8_t* data, size_t len) {
@@ -535,9 +528,7 @@ private:
 
   void setRawTtl(const std::string& key, uint8_t tag, const uint8_t* data, size_t len,
                  double ttlMs) {
-    constexpr double maxSafeInteger = 9007199254740991.0;
-    if (!std::isfinite(ttlMs) || ttlMs <= 0 || ttlMs > maxSafeInteger ||
-        std::floor(ttlMs) != ttlMs) {
+    if (!common::isPositiveSafeInteger(ttlMs)) {
       throw std::runtime_error("ttlMs must be a positive safe integer");
     }
     if (scc_kv_set_ttl(_handle, kptr(key), key.size(), tag, data, len,
@@ -546,31 +537,12 @@ private:
     }
   }
 
-  // Retaining a rare multi-megabyte read on every Nitro worker would inflate
-  // process memory indefinitely, so only modest scratch buffers stay cached.
   std::optional<std::string> getStringLike(const std::string& key, uint8_t tag) {
-    constexpr size_t initialCapacity = 4096;
-    constexpr size_t maxRetainedCapacity = 256 * 1024;
-    static thread_local std::vector<uint8_t> scratch(initialCapacity);
-    std::vector<uint8_t> oversized;
-    std::vector<uint8_t>* buffer = &scratch;
-    while (true) {
-      size_t needed = 0;
-      int rc = scc_kv_get_raw(_handle, kptr(key), key.size(), tag, buffer->data(),
-                              buffer->size(), &needed);
-      if (rc < 0) throwLastError("get");
-      if (rc == 0) return std::nullopt;
-      if (needed <= buffer->size()) {
-        return std::string(reinterpret_cast<const char*>(buffer->data()), needed);
-      }
-      if (needed <= maxRetainedCapacity) {
-        scratch.resize(needed);
-        buffer = &scratch;
-      } else {
-        oversized.resize(needed);
-        buffer = &oversized;
-      }
-    }
+    return common::readStringLike(
+        _handle, key, tag, [](const char* op) { throwLastError(op); },
+        [](const uint8_t* data, size_t len) {
+          return std::string(reinterpret_cast<const char*>(data), len);
+        });
   }
 };
 

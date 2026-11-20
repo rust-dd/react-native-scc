@@ -2,6 +2,7 @@
 
 #include "HybridSccKvSpec.hpp"
 #include "HybridSccKvInstance.hpp"
+#include "SccKvCommon.hpp"
 #include "scc_kv_ffi.h"
 
 #include <cmath>
@@ -36,7 +37,7 @@ public:
     SccKvStore* handle =
         scc_kv_open(dir.c_str(), id.c_str(), strictDurability, recreate, keyPtr, keyLen,
                     maxEntriesValue, sweepValue);
-    if (handle == nullptr) throwLastError("open");
+    if (handle == nullptr) common::throwLastError("open");
     return std::make_shared<HybridSccKvInstance>(handle);
   }
 
@@ -47,7 +48,7 @@ public:
     uint64_t sweepValue =
         optionalPositiveInteger<uint64_t>(ttlSweepIntervalMs, "ttlSweepIntervalMs");
     SccKvStore* handle = scc_kv_in_memory(id.c_str(), maxEntriesValue, sweepValue);
-    if (handle == nullptr) throwLastError("inMemory");
+    if (handle == nullptr) common::throwLastError("inMemory");
     return std::make_shared<HybridSccKvInstance>(handle);
   }
 
@@ -55,22 +56,13 @@ private:
   template <typename Integer>
   static Integer optionalPositiveInteger(const std::optional<double>& value, const char* name) {
     if (!value.has_value()) return 0;
-    constexpr double maxSafeInteger = 9007199254740991.0;
     double v = *value;
     double platformMax = static_cast<double>(std::numeric_limits<Integer>::max());
-    if (!std::isfinite(v) || v <= 0 || v > maxSafeInteger || v > platformMax ||
-        std::floor(v) != v) {
+    if (!common::isPositiveSafeInteger(v) || v > platformMax) {
       throw std::runtime_error(std::string(name) +
                                " must be a positive safe integer supported by this platform");
     }
     return static_cast<Integer>(v);
-  }
-
-  [[noreturn]] static void throwLastError(const char* op) {
-    char* err = scc_kv_last_error();
-    std::string msg = err != nullptr ? err : "unknown error";
-    if (err != nullptr) scc_kv_free_cstring(err);
-    throw std::runtime_error(std::string(op) + " failed: " + msg);
   }
 };
 
